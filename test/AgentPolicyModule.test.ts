@@ -1,11 +1,12 @@
 import { expect } from "chai";
 import { ethers } from "hardhat";
-import { AgentPolicyModule } from "../typechain-types";
+import { AgentPolicyModule, MockSafe } from "../typechain-types";
 import { HardhatEthersSigner } from "@nomicfoundation/hardhat-ethers/signers";
 import { time } from "@nomicfoundation/hardhat-network-helpers";
 
 describe("AgentPolicyModule", function () {
   let module: AgentPolicyModule;
+  let mockSafe: MockSafe;
   let owner: HardhatEthersSigner;
   let agent: HardhatEthersSigner;
   let other: HardhatEthersSigner;
@@ -25,8 +26,14 @@ describe("AgentPolicyModule", function () {
 
   beforeEach(async function () {
     [owner, agent, other, targetContract] = await ethers.getSigners();
+
+    // Deploy MockSafe first
+    const SafeFactory = await ethers.getContractFactory("MockSafe");
+    mockSafe = await SafeFactory.deploy();
+
+    // Deploy AgentPolicyModule with Safe address
     const Factory = await ethers.getContractFactory("AgentPolicyModule");
-    module = await Factory.deploy();
+    module = await Factory.deploy(await mockSafe.getAddress());
     expiresAt = (await time.latest()) + 86400; // 1 day from now
   });
 
@@ -43,6 +50,21 @@ describe("AgentPolicyModule", function () {
       expiresAt
     );
   }
+
+  // ──────────────────────────────────────────────
+  // Constructor
+  // ──────────────────────────────────────────────
+
+  describe("constructor", function () {
+    it("should store the Safe address", async function () {
+      expect(await module.safe()).to.equal(await mockSafe.getAddress());
+    });
+
+    it("should reject zero address Safe", async function () {
+      const Factory = await ethers.getContractFactory("AgentPolicyModule");
+      await expect(Factory.deploy(ethers.ZeroAddress)).to.be.revertedWith("Invalid safe address");
+    });
+  });
 
   // ──────────────────────────────────────────────
   // grantSession
@@ -329,6 +351,149 @@ describe("AgentPolicyModule", function () {
       await expect(
         module.validateTransaction(other.address, targetContract.address, ethers.parseEther("0.1"), calldata)
       ).to.emit(module, "TransactionValidated");
+    });
+  });
+
+  // ──────────────────────────────────────────────
+  // executeTransaction (Safe integration)
+  // ──────────────────────────────────────────────
+
+  describe("executeTransaction", function () {
+    let targetAddress: string;
+
+    beforeEach(async function () {
+      // Use the actual target contract address (an EOA for simple tests)
+      targetAddress = targetContract.address;
+
+      // Grant session to agent with targetAddress in allowlist
+      await grantDefaultSession();
+
+      // Fund the MockSafe so it can send ETH
+      await owner.sendTransaction({
+        to: await mockSafe.getAddress(),
+        value: ethers.parseEther("10.0"),
+      });
+    });
+
+    it("should validate and execute through the Safe", async function () {
+      const calldata = SELECTOR_CREATE_PACT + "0".repeat(56);
+
+      await expect(
+        module.connect(agent).executeTransaction(targetAddress, ethers.parseEther("0.3"), calldata)
+      ).to.emit(module, "TransactionExecuted")
+        .withArgs(agent.address, targetAddress, ethers.parseEther("0.3"));
+    });
+
+    it("should emit TransactionValidated before TransactionExecuted", async function () {
+      const calldata = SELECTOR_CREATE_PACT + "0".repeat(56);
+
+      const tx = await module.connect(agent).executeTransaction(targetAddress, ethers.parseEther("0.1"), calldata);
+      const receipt = await tx.wait();
+
+      // Both events should be in the receipt
+      const moduleIface = module.interface;
+      const events = receipt!.logs
+        .map((log) => { try { return moduleIface.parseLog(log); } catch { return null; } })
+        .filter(Boolean);
+
+      const eventNames = events.map((e: any) => e.name);
+      expect(eventNames).to.include("TransactionValidated");
+      expect(eventNames).to.include("TransactionExecuted");
+    });
+
+    it("should record spending correctly", async function () {
+      const calldata = SELECTOR_CREATE_PACT + "0".repeat(56);
+      const value = ethers.parseEther("0.3");
+
+      await module.connect(agent).executeTransaction(targetAddress, value, calldata);
+
+      const s = await module.getSpending(agent.address);
+      expect(s.dailySpent).to.equal(value);
+      expect(s.weeklySpent).to.equal(value);
+    });
+
+    it("should use msg.sender as the session key", async function () {
+      const calldata = SELECTOR_CREATE_PACT + "0".repeat(56);
+
+      // Agent has a session — should work
+      await expect(
+        module.connect(agent).executeTransaction(targetAddress, ethers.parseEther("0.1"), calldata)
+      ).to.not.be.reverted;
+
+      // Other does NOT have a session — should fail
+      await expect(
+        module.connect(other).executeTransaction(targetAddress, ethers.parseEther("0.1"), calldata)
+      ).to.be.revertedWith("Session not active");
+    });
+
+    it("should reject when policy validation fails", async function () {
+      const calldata = SELECTOR_CREATE_PACT + "0".repeat(56);
+
+      // Exceed per-tx limit
+      await expect(
+        module.connect(agent).executeTransaction(targetAddress, MAX_PER_TX + 1n, calldata)
+      ).to.be.revertedWith("Exceeds per-tx limit");
+    });
+
+    it("should reject disallowed contract", async function () {
+      const calldata = SELECTOR_CREATE_PACT + "0".repeat(56);
+
+      await expect(
+        module.connect(agent).executeTransaction(other.address, ethers.parseEther("0.1"), calldata)
+      ).to.be.revertedWith("Contract not allowed");
+    });
+
+    it("should reject disallowed function selector", async function () {
+      const calldata = SELECTOR_FORBIDDEN + "0".repeat(56);
+
+      await expect(
+        module.connect(agent).executeTransaction(targetAddress, ethers.parseEther("0.1"), calldata)
+      ).to.be.revertedWith("Function not allowed");
+    });
+
+    it("should enforce spending limits across multiple calls", async function () {
+      const calldata = SELECTOR_CREATE_PACT + "0".repeat(56);
+      const txAmount = ethers.parseEther("0.5");
+
+      // 4 txs of 0.5 ETH = 2.0 ETH (daily max)
+      await module.connect(agent).executeTransaction(targetAddress, txAmount, calldata);
+      await module.connect(agent).executeTransaction(targetAddress, txAmount, calldata);
+      await module.connect(agent).executeTransaction(targetAddress, txAmount, calldata);
+      await module.connect(agent).executeTransaction(targetAddress, txAmount, calldata);
+
+      // 5th tx should fail — daily limit exceeded
+      await expect(
+        module.connect(agent).executeTransaction(targetAddress, txAmount, calldata)
+      ).to.be.revertedWith("Exceeds daily limit");
+    });
+
+    it("should send ETH from the Safe, not from the session key", async function () {
+      const calldata = SELECTOR_CREATE_PACT + "0".repeat(56);
+      const sendAmount = ethers.parseEther("0.3");
+
+      const safeAddr = await mockSafe.getAddress();
+      const safeBefore = await ethers.provider.getBalance(safeAddr);
+      const targetBefore = await ethers.provider.getBalance(targetAddress);
+
+      await module.connect(agent).executeTransaction(targetAddress, sendAmount, calldata);
+
+      const safeAfter = await ethers.provider.getBalance(safeAddr);
+      const targetAfter = await ethers.provider.getBalance(targetAddress);
+
+      // Safe balance should decrease
+      expect(safeBefore - safeAfter).to.equal(sendAmount);
+      // Target balance should increase
+      expect(targetAfter - targetBefore).to.equal(sendAmount);
+    });
+
+    it("should call the Safe's execTransactionFromModule", async function () {
+      const calldata = SELECTOR_CREATE_PACT + "0".repeat(56);
+      const sendAmount = ethers.parseEther("0.1");
+
+      await expect(
+        module.connect(agent).executeTransaction(targetAddress, sendAmount, calldata)
+      ).to.emit(mockSafe, "ExecutedFromModule")
+        .withArgs(await module.getAddress(), targetAddress, sendAmount, calldata);
     });
   });
 

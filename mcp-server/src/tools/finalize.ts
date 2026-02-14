@@ -1,9 +1,13 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import { ethers } from "ethers";
 import { Config } from "../config.js";
-import { getAgentPact } from "../contracts.js";
+import { SafeExecutor } from "../wallet/safe-executor.js";
+import { AGENT_PACT_ABI } from "../abis.js";
 
-export function registerFinalizeTools(server: McpServer, config: Config) {
+const agentPactIface = new ethers.Interface(AGENT_PACT_ABI);
+
+export function registerFinalizeTools(server: McpServer, config: Config, executor: SafeExecutor) {
   server.tool(
     "finalize-verification",
     "Trigger final score calculation. If score passes threshold, moves to PENDING_APPROVAL for buyer review.",
@@ -12,13 +16,12 @@ export function registerFinalizeTools(server: McpServer, config: Config) {
     },
     async ({ pactId }) => {
       try {
-        const contract = getAgentPact(config);
-        const tx = await contract.finalizeVerification(pactId);
-        const receipt = await tx.wait();
+        const calldata = agentPactIface.encodeFunctionData("finalizeVerification", [pactId]);
+        const receipt = await executor.execute(config.agentPactAddress, 0n, calldata);
 
         // Check which event was emitted to determine result
         const events = receipt.logs
-          .map((log: any) => { try { return contract.interface.parseLog(log); } catch { return null; } })
+          .map((log: any) => { try { return agentPactIface.parseLog(log); } catch { return null; } })
           .filter(Boolean);
 
         const finalized = events.find((e: any) => e?.name === "VerificationFinalized");
@@ -30,7 +33,7 @@ export function registerFinalizeTools(server: McpServer, config: Config) {
         return {
           content: [{
             type: "text" as const,
-            text: `Verification finalized for pact #${pactId}. Weighted score: ${score}/100. Status: ${statusName}.\nTx: ${tx.hash}`,
+            text: `Verification finalized for pact #${pactId}. Weighted score: ${score}/100. Status: ${statusName}.\nTx: ${receipt.hash}`,
           }],
         };
       } catch (err: any) {

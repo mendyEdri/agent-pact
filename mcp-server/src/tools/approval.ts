@@ -1,9 +1,13 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import { ethers } from "ethers";
 import { Config } from "../config.js";
-import { getAgentPact } from "../contracts.js";
+import { SafeExecutor } from "../wallet/safe-executor.js";
+import { AGENT_PACT_ABI } from "../abis.js";
 
-export function registerApprovalTools(server: McpServer, config: Config) {
+const agentPactIface = new ethers.Interface(AGENT_PACT_ABI);
+
+export function registerApprovalTools(server: McpServer, config: Config, executor: SafeExecutor) {
   server.tool(
     "approve-work",
     "Buyer approves delivered work after oracle verification passes. Releases payment to seller.",
@@ -12,14 +16,13 @@ export function registerApprovalTools(server: McpServer, config: Config) {
     },
     async ({ pactId }) => {
       try {
-        const contract = getAgentPact(config);
-        const tx = await contract.approveWork(pactId);
-        await tx.wait();
+        const calldata = agentPactIface.encodeFunctionData("approveWork", [pactId]);
+        const receipt = await executor.execute(config.agentPactAddress, 0n, calldata);
 
         return {
           content: [{
             type: "text" as const,
-            text: `Pact #${pactId} approved. Payment released to seller, buyer stake returned. Status: COMPLETED.\nTx: ${tx.hash}`,
+            text: `Pact #${pactId} approved. Payment released to seller, buyer stake returned. Status: COMPLETED.\nTx: ${receipt.hash}`,
           }],
         };
       } catch (err: any) {
@@ -36,14 +39,13 @@ export function registerApprovalTools(server: McpServer, config: Config) {
     },
     async ({ pactId }) => {
       try {
-        const contract = getAgentPact(config);
-        const tx = await contract.rejectWork(pactId);
-        await tx.wait();
+        const calldata = agentPactIface.encodeFunctionData("rejectWork", [pactId]);
+        const receipt = await executor.execute(config.agentPactAddress, 0n, calldata);
 
         return {
           content: [{
             type: "text" as const,
-            text: `Pact #${pactId} rejected. Status: DISPUTED. Set an arbitrator to resolve.\nTx: ${tx.hash}`,
+            text: `Pact #${pactId} rejected. Status: DISPUTED. Set an arbitrator to resolve.\nTx: ${receipt.hash}`,
           }],
         };
       } catch (err: any) {
@@ -60,14 +62,13 @@ export function registerApprovalTools(server: McpServer, config: Config) {
     },
     async ({ pactId }) => {
       try {
-        const contract = getAgentPact(config);
-        const tx = await contract.autoApprove(pactId);
-        await tx.wait();
+        const calldata = agentPactIface.encodeFunctionData("autoApprove", [pactId]);
+        const receipt = await executor.execute(config.agentPactAddress, 0n, calldata);
 
         return {
           content: [{
             type: "text" as const,
-            text: `Review period expired. Pact #${pactId} auto-approved. Payment released to seller.\nTx: ${tx.hash}`,
+            text: `Review period expired. Pact #${pactId} auto-approved. Payment released to seller.\nTx: ${receipt.hash}`,
           }],
         };
       } catch (err: any) {

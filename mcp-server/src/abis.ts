@@ -81,16 +81,19 @@ export const ORACLE_REGISTRY_ABI = [
 export const AGENT_POLICY_MODULE_ABI = [
   "function grantSession(address sessionKey, uint256 maxPerTx, uint256 maxDaily, uint256 maxWeekly, uint256 humanApprovalAbove, address[] allowedContracts, bytes4[] allowedFunctions, address[] allowedTokens, uint256 expiresAt)",
   "function revokeSession(address sessionKey)",
+  "function executeTransaction(address to, uint256 value, bytes data) returns (bool)",
   "function validateTransaction(address sessionKey, address to, uint256 value, bytes data) returns (bool)",
   "function getSession(address sessionKey) view returns (uint256 maxPerTx, uint256 maxDaily, uint256 maxWeekly, uint256 humanApprovalAbove, address[] allowedContracts, bytes4[] allowedFunctions, address[] allowedTokens, uint256 expiresAt, bool active)",
   "function getSpending(address sessionKey) view returns (uint256 dailySpent, uint256 weeklySpent, uint256 lastDayReset, uint256 lastWeekReset)",
   "function isSessionActive(address sessionKey) view returns (bool)",
+  "function safe() view returns (address)",
   "function sessionCount() view returns (uint256)",
   "function owner() view returns (address)",
 
   "event SessionGranted(address indexed sessionKey, uint256 maxPerTx, uint256 maxDaily, uint256 maxWeekly, uint256 expiresAt)",
   "event SessionRevoked(address indexed sessionKey)",
   "event TransactionValidated(address indexed sessionKey, address indexed target, uint256 value)",
+  "event TransactionExecuted(address indexed sessionKey, address indexed target, uint256 value)",
   "event TransactionRejected(address indexed sessionKey, address indexed target, uint256 value, string reason)",
   "event SpendingLimitHit(address indexed sessionKey, string limitType, uint256 spent, uint256 limit)",
 ];

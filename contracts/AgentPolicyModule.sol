@@ -3,12 +3,27 @@ pragma solidity ^0.8.20;
 
 import "@openzeppelin/contracts/access/Ownable.sol";
 
+/// @notice Minimal interface for Gnosis Safe's module execution.
+interface ISafe {
+    /// @dev Execute a transaction from an enabled module.
+    /// @param to Destination address.
+    /// @param value ETH value to send.
+    /// @param data Calldata for the destination.
+    /// @param operation 0 = Call, 1 = DelegateCall.
+    function execTransactionFromModule(
+        address to,
+        uint256 value,
+        bytes memory data,
+        uint8 operation
+    ) external returns (bool success);
+}
+
 /// @title AgentPolicyModule
 /// @notice Safe module that enforces spending policies for AI agent session keys.
 /// @dev The owner (human) grants scoped session keys to agents. Each key has
 ///      per-tx, daily, and weekly spending limits plus contract/function allowlists.
-///      Designed to be used as a Safe module — the Safe calls `validateTransaction`
-///      before executing any transaction initiated by a session key.
+///      Session keys call `executeTransaction` — the module validates the policy
+///      then tells the Safe to execute via `execTransactionFromModule`.
 contract AgentPolicyModule is Ownable {
     struct AgentPolicy {
         uint256 maxPerTx;
@@ -28,6 +43,8 @@ contract AgentPolicyModule is Ownable {
         uint256 lastDayReset;
         uint256 lastWeekReset;
     }
+
+    ISafe public safe;
 
     mapping(address => AgentPolicy) internal _policies;
     mapping(address => SpendingTracker) public spending;
@@ -53,6 +70,11 @@ contract AgentPolicyModule is Ownable {
         uint256 value,
         string reason
     );
+    event TransactionExecuted(
+        address indexed sessionKey,
+        address indexed target,
+        uint256 value
+    );
     event SpendingLimitHit(
         address indexed sessionKey,
         string limitType,
@@ -60,7 +82,10 @@ contract AgentPolicyModule is Ownable {
         uint256 limit
     );
 
-    constructor() Ownable(msg.sender) {}
+    constructor(address _safe) Ownable(msg.sender) {
+        require(_safe != address(0), "Invalid safe address");
+        safe = ISafe(_safe);
+    }
 
     // ──────────────────────────────────────────────
     // Session Management (owner only)
@@ -117,18 +142,59 @@ contract AgentPolicyModule is Ownable {
     }
 
     // ──────────────────────────────────────────────
-    // Transaction Validation
+    // Transaction Execution (primary entry point)
+    // ──────────────────────────────────────────────
+
+    /// @notice Execute a transaction through the Safe on behalf of a session key.
+    /// @dev Called by the session key holder. Validates against the session's
+    ///      policy, then tells the Safe to execute via execTransactionFromModule.
+    ///      The ETH value comes from the Safe's balance, not the session key.
+    /// @param to Target contract address.
+    /// @param value ETH value to send (paid by the Safe).
+    /// @param data Calldata for the target contract.
+    function executeTransaction(
+        address to,
+        uint256 value,
+        bytes calldata data
+    ) external returns (bool) {
+        // msg.sender is the session key
+        _validateTransaction(msg.sender, to, value, data);
+
+        // Execute through the Safe — the Safe sends the ETH
+        bool success = safe.execTransactionFromModule(to, value, data, 0);
+        require(success, "Safe execution failed");
+
+        emit TransactionExecuted(msg.sender, to, value);
+        return true;
+    }
+
+    // ──────────────────────────────────────────────
+    // Transaction Validation (standalone / guard use)
     // ──────────────────────────────────────────────
 
     /// @notice Validates a transaction against the session key's policy.
-    /// @dev Called by the Safe before executing a transaction. Returns true
-    ///      if the transaction is allowed, reverts otherwise.
+    /// @dev Can be called externally for guard-style integration where the Safe
+    ///      validates before executing. For the standard flow, use executeTransaction.
     function validateTransaction(
         address sessionKey,
         address to,
         uint256 value,
         bytes calldata data
     ) external returns (bool) {
+        _validateTransaction(sessionKey, to, value, data);
+        return true;
+    }
+
+    // ──────────────────────────────────────────────
+    // Internal validation logic
+    // ──────────────────────────────────────────────
+
+    function _validateTransaction(
+        address sessionKey,
+        address to,
+        uint256 value,
+        bytes calldata data
+    ) internal {
         AgentPolicy storage policy = _policies[sessionKey];
 
         // Check session is active
@@ -216,7 +282,6 @@ contract AgentPolicyModule is Ownable {
         tracker.weeklySpent += value;
 
         emit TransactionValidated(sessionKey, to, value);
-        return true;
     }
 
     // ──────────────────────────────────────────────

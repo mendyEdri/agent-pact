@@ -2,10 +2,13 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { ethers } from "ethers";
 import { Config } from "../config.js";
-import { getAgentPact, getOracleRegistry } from "../contracts.js";
-import { PolicyChecker } from "../wallet/policy.js";
+import { SafeExecutor } from "../wallet/safe-executor.js";
+import { AGENT_PACT_ABI, ORACLE_REGISTRY_ABI } from "../abis.js";
 
-export function registerOracleTools(server: McpServer, config: Config, policy: PolicyChecker) {
+const agentPactIface = new ethers.Interface(AGENT_PACT_ABI);
+const oracleRegistryIface = new ethers.Interface(ORACLE_REGISTRY_ABI);
+
+export function registerOracleTools(server: McpServer, config: Config, executor: SafeExecutor) {
   server.tool(
     "register-oracle",
     "Register as a verification oracle with stake and capabilities",
@@ -15,23 +18,15 @@ export function registerOracleTools(server: McpServer, config: Config, policy: P
     },
     async ({ capabilities, stakeEth }) => {
       try {
-        const registry = getOracleRegistry(config);
         const stakeWei = ethers.parseEther(stakeEth);
 
-        const policyErr = policy.check(stakeWei);
-        if (policyErr) {
-          return { content: [{ type: "text" as const, text: policyErr }], isError: true };
-        }
-
-        const tx = await registry.registerOracle(capabilities, { value: stakeWei });
-        await tx.wait();
-
-        policy.record(stakeWei);
+        const calldata = oracleRegistryIface.encodeFunctionData("registerOracle", [capabilities]);
+        const receipt = await executor.execute(config.oracleRegistryAddress, stakeWei, calldata);
 
         return {
           content: [{
             type: "text" as const,
-            text: `Registered as oracle. Staked ${stakeEth} ETH. Capabilities: ${capabilities.join(", ")}.\nTx: ${tx.hash}`,
+            text: `Registered as oracle. Staked ${stakeEth} ETH. Capabilities: ${capabilities.join(", ")}.\nTx: ${receipt.hash}`,
           }],
         };
       } catch (err: any) {
@@ -50,16 +45,15 @@ export function registerOracleTools(server: McpServer, config: Config, policy: P
     },
     async ({ pactId, score, proof }) => {
       try {
-        const contract = getAgentPact(config);
         const proofBytes = proof.startsWith("0x") ? proof : ethers.keccak256(ethers.toUtf8Bytes(proof));
 
-        const tx = await contract.submitVerification(pactId, score, proofBytes);
-        await tx.wait();
+        const calldata = agentPactIface.encodeFunctionData("submitVerification", [pactId, score, proofBytes]);
+        const receipt = await executor.execute(config.agentPactAddress, 0n, calldata);
 
         return {
           content: [{
             type: "text" as const,
-            text: `Verification submitted for pact #${pactId}. Score: ${score}/100. Proof: ${proofBytes}.\nTx: ${tx.hash}`,
+            text: `Verification submitted for pact #${pactId}. Score: ${score}/100. Proof: ${proofBytes}.\nTx: ${receipt.hash}`,
           }],
         };
       } catch (err: any) {

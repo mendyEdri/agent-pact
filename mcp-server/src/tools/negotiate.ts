@@ -3,8 +3,12 @@ import { z } from "zod";
 import { ethers } from "ethers";
 import { Config } from "../config.js";
 import { getAgentPact } from "../contracts.js";
+import { SafeExecutor } from "../wallet/safe-executor.js";
+import { AGENT_PACT_ABI } from "../abis.js";
 
-export function registerNegotiateTools(server: McpServer, config: Config) {
+const agentPactIface = new ethers.Interface(AGENT_PACT_ABI);
+
+export function registerNegotiateTools(server: McpServer, config: Config, executor: SafeExecutor) {
   server.tool(
     "propose-amendment",
     "Propose modified terms for a pact in NEGOTIATING status. Creates an on-chain counter-offer.",
@@ -16,16 +20,14 @@ export function registerNegotiateTools(server: McpServer, config: Config) {
     },
     async ({ pactId, paymentEth, deadline, specHash }) => {
       try {
-        const contract = getAgentPact(config);
-
         const newPayment = paymentEth ? ethers.parseEther(paymentEth) : 0n;
         const newDeadline = deadline ?? 0;
         const newSpec = specHash
           ? (specHash.startsWith("0x") ? specHash : ethers.keccak256(ethers.toUtf8Bytes(specHash)))
           : ethers.ZeroHash;
 
-        const tx = await contract.proposeAmendment(pactId, newPayment, newDeadline, newSpec);
-        await tx.wait();
+        const calldata = agentPactIface.encodeFunctionData("proposeAmendment", [pactId, newPayment, newDeadline, newSpec]);
+        const receipt = await executor.execute(config.agentPactAddress, 0n, calldata);
 
         const changes: string[] = [];
         if (paymentEth) changes.push(`payment → ${paymentEth} ETH`);
@@ -36,7 +38,7 @@ export function registerNegotiateTools(server: McpServer, config: Config) {
         return {
           content: [{
             type: "text" as const,
-            text: `Amendment proposed for pact #${pactId}: ${changes.join(", ")}. Waiting for counterparty.\nTx: ${tx.hash}`,
+            text: `Amendment proposed for pact #${pactId}: ${changes.join(", ")}. Waiting for counterparty.\nTx: ${receipt.hash}`,
           }],
         };
       } catch (err: any) {
@@ -70,13 +72,13 @@ export function registerNegotiateTools(server: McpServer, config: Config) {
           value = extra + extraStake;
         }
 
-        const tx = await contract.acceptAmendment(pactId, { value });
-        await tx.wait();
+        const calldata = agentPactIface.encodeFunctionData("acceptAmendment", [pactId]);
+        const receipt = await executor.execute(config.agentPactAddress, value, calldata);
 
         return {
           content: [{
             type: "text" as const,
-            text: `Amendment accepted for pact #${pactId}. Terms updated: payment=${ethers.formatEther(newPayment)} ETH.${value > 0n ? ` Additional ${ethers.formatEther(value)} ETH deposited.` : ""}\nTx: ${tx.hash}`,
+            text: `Amendment accepted for pact #${pactId}. Terms updated: payment=${ethers.formatEther(newPayment)} ETH.${value > 0n ? ` Additional ${ethers.formatEther(value)} ETH deposited.` : ""}\nTx: ${receipt.hash}`,
           }],
         };
       } catch (err: any) {

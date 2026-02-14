@@ -3,6 +3,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { loadConfig } from "./config.js";
 import { SpendingTracker } from "./wallet/spending.js";
 import { PolicyChecker } from "./wallet/policy.js";
+import { SafeExecutor } from "./wallet/safe-executor.js";
 import { registerQueryTools } from "./tools/query.js";
 import { registerPactTools } from "./tools/pact.js";
 import { registerNegotiateTools } from "./tools/negotiate.js";
@@ -25,9 +26,12 @@ async function main() {
   console.error(`PolicyModule: ${config.policyModuleAddress}`);
   console.error(`Safe: ${config.safeAddress}`);
 
-  // Initialize wallet policy layer
+  // Initialize wallet policy layer (defense-in-depth software checks)
   const tracker = new SpendingTracker();
   const policy = new PolicyChecker(config, tracker);
+
+  // Initialize Safe executor — all write transactions route through the Safe
+  const executor = new SafeExecutor(config, policy);
 
   // Create MCP server
   const server = new McpServer({
@@ -35,15 +39,15 @@ async function main() {
     version: "1.0.0",
   });
 
-  // Register all tools
+  // Register all tools (write tools use SafeExecutor, read tools use direct calls)
   registerQueryTools(server, config);
-  registerPactTools(server, config, policy);
-  registerNegotiateTools(server, config);
-  registerWorkTools(server, config);
-  registerApprovalTools(server, config);
-  registerOracleTools(server, config, policy);
-  registerDisputeTools(server, config);
-  registerFinalizeTools(server, config);
+  registerPactTools(server, config, executor);
+  registerNegotiateTools(server, config, executor);
+  registerWorkTools(server, config, executor);
+  registerApprovalTools(server, config, executor);
+  registerOracleTools(server, config, executor);
+  registerDisputeTools(server, config, executor);
+  registerFinalizeTools(server, config, executor);
   registerWalletTools(server, config, policy, tracker);
 
   // Register resources

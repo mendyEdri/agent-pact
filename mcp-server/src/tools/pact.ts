@@ -3,9 +3,12 @@ import { z } from "zod";
 import { ethers } from "ethers";
 import { Config } from "../config.js";
 import { getAgentPact } from "../contracts.js";
-import { PolicyChecker } from "../wallet/policy.js";
+import { SafeExecutor } from "../wallet/safe-executor.js";
+import { AGENT_PACT_ABI } from "../abis.js";
 
-export function registerPactTools(server: McpServer, config: Config, policy: PolicyChecker) {
+const agentPactIface = new ethers.Interface(AGENT_PACT_ABI);
+
+export function registerPactTools(server: McpServer, config: Config, executor: SafeExecutor) {
   server.tool(
     "create-pact",
     "Create a new pact — works for both buyer-initiated (request for work) and seller-initiated (offer/listing) flows",
@@ -21,7 +24,6 @@ export function registerPactTools(server: McpServer, config: Config, policy: Pol
     },
     async ({ role, specHash, deadline, oracles, oracleWeights, threshold, paymentEth, reviewPeriod }) => {
       try {
-        const contract = getAgentPact(config);
         const paymentWei = ethers.parseEther(paymentEth);
         const stakeWei = paymentWei / 10n;
         const initiator = role === "buyer" ? 0 : 1;
@@ -33,33 +35,18 @@ export function registerPactTools(server: McpServer, config: Config, policy: Pol
           depositWei = stakeWei;
         }
 
-        // Software policy check
-        const policyErr = policy.check(depositWei);
-        if (policyErr) {
-          return { content: [{ type: "text" as const, text: policyErr }], isError: true };
-        }
-
         // Convert specHash — if it looks like a plain string, hash it
         const specBytes = specHash.startsWith("0x") ? specHash : ethers.keccak256(ethers.toUtf8Bytes(specHash));
 
-        const tx = await contract.createPact(
-          initiator,
-          specBytes,
-          deadline,
-          oracles,
-          oracleWeights,
-          threshold,
-          paymentWei,
-          reviewPeriod,
-          { value: depositWei }
-        );
-        const receipt = await tx.wait();
+        const calldata = agentPactIface.encodeFunctionData("createPact", [
+          initiator, specBytes, deadline, oracles, oracleWeights, threshold, paymentWei, reviewPeriod,
+        ]);
 
-        policy.record(depositWei);
+        const receipt = await executor.execute(config.agentPactAddress, depositWei, calldata);
 
         // Extract pactId from event
         const event = receipt.logs
-          .map((log: any) => { try { return contract.interface.parseLog(log); } catch { return null; } })
+          .map((log: any) => { try { return agentPactIface.parseLog(log); } catch { return null; } })
           .find((e: any) => e?.name === "PactCreated");
         const pactId = event?.args?.pactId?.toString() ?? "unknown";
 
@@ -71,7 +58,7 @@ export function registerPactTools(server: McpServer, config: Config, policy: Pol
         return {
           content: [{
             type: "text" as const,
-            text: `Pact #${pactId} created as ${role.toUpperCase()}. ${roleDesc}\nTx: ${tx.hash}`,
+            text: `Pact #${pactId} created as ${role.toUpperCase()}. ${roleDesc}\nTx: ${receipt.hash}`,
           }],
         };
       } catch (err: any) {
@@ -107,20 +94,13 @@ export function registerPactTools(server: McpServer, config: Config, policy: Pol
           roleAssigned = "BUYER";
         }
 
-        const policyErr = policy.check(depositWei);
-        if (policyErr) {
-          return { content: [{ type: "text" as const, text: policyErr }], isError: true };
-        }
-
-        const tx = await contract.acceptPact(pactId, { value: depositWei });
-        await tx.wait();
-
-        policy.record(depositWei);
+        const calldata = agentPactIface.encodeFunctionData("acceptPact", [pactId]);
+        const receipt = await executor.execute(config.agentPactAddress, depositWei, calldata);
 
         return {
           content: [{
             type: "text" as const,
-            text: `Accepted pact #${pactId} as ${roleAssigned}. Deposited ${ethers.formatEther(depositWei)} ETH.\nTx: ${tx.hash}`,
+            text: `Accepted pact #${pactId} as ${roleAssigned}. Deposited ${ethers.formatEther(depositWei)} ETH.\nTx: ${receipt.hash}`,
           }],
         };
       } catch (err: any) {
@@ -137,14 +117,13 @@ export function registerPactTools(server: McpServer, config: Config, policy: Pol
     },
     async ({ pactId }) => {
       try {
-        const contract = getAgentPact(config);
-        const tx = await contract.claimTimeout(pactId);
-        await tx.wait();
+        const calldata = agentPactIface.encodeFunctionData("claimTimeout", [pactId]);
+        const receipt = await executor.execute(config.agentPactAddress, 0n, calldata);
 
         return {
           content: [{
             type: "text" as const,
-            text: `Timeout claimed for pact #${pactId}. Funds refunded.\nTx: ${tx.hash}`,
+            text: `Timeout claimed for pact #${pactId}. Funds refunded.\nTx: ${receipt.hash}`,
           }],
         };
       } catch (err: any) {
