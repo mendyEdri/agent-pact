@@ -35,11 +35,14 @@ export function registerDiscoveryTools(server: McpServer, config: Config) {
         const pacts = await Promise.all(
           pactIds.map(async (id) => {
             const p = await contract.getPact(id);
+            const isToken = p.paymentToken !== ethers.ZeroAddress;
+            const unit = isToken ? `tokens (${p.paymentToken})` : "ETH";
             return {
               pactId: Number(id),
               type: INITIATOR_NAMES[Number(p.initiator)] === "BUYER" ? "REQUEST (buyer seeking seller)" : "LISTING (seller offering service)",
-              payment: ethers.formatEther(p.payment) + " ETH",
-              oracleFee: ethers.formatEther(p.oracleFee) + " ETH",
+              payment: ethers.formatEther(p.payment) + ` ${unit}`,
+              oracleFee: ethers.formatEther(p.oracleFee) + ` ${unit}`,
+              paymentToken: isToken ? p.paymentToken : "ETH (native)",
               deadline: new Date(Number(p.deadline_) * 1000).toISOString(),
               specHash: p.specHash,
               creator: p.initiator === 0n ? p.buyer : p.seller,
@@ -83,11 +86,14 @@ export function registerDiscoveryTools(server: McpServer, config: Config) {
           pactIds.map(async (id) => {
             const p = await contract.getPact(id);
             const isBuyer = p.buyer.toLowerCase() === myAddr.toLowerCase();
+            const isToken = p.paymentToken !== ethers.ZeroAddress;
+            const unit = isToken ? "tokens" : "ETH";
             return {
               pactId: Number(id),
               role: isBuyer ? "BUYER" : "SELLER",
               counterparty: isBuyer ? p.seller : p.buyer,
-              payment: ethers.formatEther(p.payment) + " ETH",
+              payment: ethers.formatEther(p.payment) + ` ${unit}`,
+              paymentToken: isToken ? p.paymentToken : "ETH (native)",
               status: STATUS_NAMES[Number(p.status)] ?? `UNKNOWN(${p.status})`,
               deadline: new Date(Number(p.deadline_) * 1000).toISOString(),
             };

@@ -2,8 +2,11 @@
 pragma solidity ^0.8.20;
 
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
 contract AgentPact is ReentrancyGuard {
+    using SafeERC20 for IERC20;
     enum Initiator {
         BUYER,
         SELLER
@@ -55,6 +58,7 @@ contract AgentPact is ReentrancyGuard {
         uint256 verifiedAt;
         uint256 oracleFee;
         bool oracleFeesPaid;
+        address paymentToken; // address(0) = native ETH
     }
 
     uint256 public nextPactId;
@@ -149,7 +153,8 @@ contract AgentPact is ReentrancyGuard {
         uint8 verificationThreshold,
         uint256 paymentAmount,
         uint256 reviewPeriod,
-        uint256 oracleFee
+        uint256 oracleFee,
+        address paymentToken
     ) external payable returns (uint256) {
         require(oracles.length > 0, "Need at least one oracle");
         require(oracles.length == oracleWeights.length, "Oracles/weights mismatch");
@@ -177,19 +182,34 @@ contract AgentPact is ReentrancyGuard {
         pact.initiator = _initiator;
         pact.reviewPeriod = reviewPeriod > 0 ? reviewPeriod : DEFAULT_REVIEW_PERIOD;
         pact.oracleFee = oracleFee;
+        pact.paymentToken = paymentToken;
 
         if (_initiator == Initiator.BUYER) {
             // Buyer creates: deposits payment + oracleFee + 10% buyer stake
             uint256 requiredDeposit = paymentAmount + oracleFee + paymentAmount / STAKE_PERCENT;
-            require(msg.value >= requiredDeposit, "Insufficient buyer deposit");
-            pact.buyer = msg.sender;
-            pact.buyerStake = msg.value - paymentAmount - oracleFee;
+            if (paymentToken == address(0)) {
+                require(msg.value >= requiredDeposit, "Insufficient buyer deposit");
+                pact.buyer = msg.sender;
+                pact.buyerStake = msg.value - paymentAmount - oracleFee;
+            } else {
+                require(msg.value == 0, "ETH not accepted for token pact");
+                IERC20(paymentToken).safeTransferFrom(msg.sender, address(this), requiredDeposit);
+                pact.buyer = msg.sender;
+                pact.buyerStake = requiredDeposit - paymentAmount - oracleFee;
+            }
         } else {
             // Seller creates: deposits 10% seller stake only (buyer pays oracle fee on accept)
             uint256 requiredStake = paymentAmount / STAKE_PERCENT;
-            require(msg.value >= requiredStake, "Insufficient seller stake");
-            pact.seller = msg.sender;
-            pact.sellerStake = msg.value;
+            if (paymentToken == address(0)) {
+                require(msg.value >= requiredStake, "Insufficient seller stake");
+                pact.seller = msg.sender;
+                pact.sellerStake = msg.value;
+            } else {
+                require(msg.value == 0, "ETH not accepted for token pact");
+                IERC20(paymentToken).safeTransferFrom(msg.sender, address(this), requiredStake);
+                pact.seller = msg.sender;
+                pact.sellerStake = requiredStake;
+            }
         }
 
         // Index: add to open pacts and creator's pact list
@@ -217,16 +237,30 @@ contract AgentPact is ReentrancyGuard {
             // Buyer created → accepter becomes seller
             require(msg.sender != pact.buyer, "Creator cannot accept own pact");
             uint256 requiredStake = pact.payment / STAKE_PERCENT;
-            require(msg.value >= requiredStake, "Insufficient seller stake");
-            pact.seller = msg.sender;
-            pact.sellerStake = msg.value;
+            if (pact.paymentToken == address(0)) {
+                require(msg.value >= requiredStake, "Insufficient seller stake");
+                pact.seller = msg.sender;
+                pact.sellerStake = msg.value;
+            } else {
+                require(msg.value == 0, "ETH not accepted for token pact");
+                IERC20(pact.paymentToken).safeTransferFrom(msg.sender, address(this), requiredStake);
+                pact.seller = msg.sender;
+                pact.sellerStake = requiredStake;
+            }
         } else {
             // Seller created → accepter becomes buyer (pays payment + oracleFee + buyerStake)
             require(msg.sender != pact.seller, "Creator cannot accept own pact");
             uint256 requiredDeposit = pact.payment + pact.oracleFee + pact.payment / STAKE_PERCENT;
-            require(msg.value >= requiredDeposit, "Insufficient buyer deposit");
-            pact.buyer = msg.sender;
-            pact.buyerStake = msg.value - pact.payment - pact.oracleFee;
+            if (pact.paymentToken == address(0)) {
+                require(msg.value >= requiredDeposit, "Insufficient buyer deposit");
+                pact.buyer = msg.sender;
+                pact.buyerStake = msg.value - pact.payment - pact.oracleFee;
+            } else {
+                require(msg.value == 0, "ETH not accepted for token pact");
+                IERC20(pact.paymentToken).safeTransferFrom(msg.sender, address(this), requiredDeposit);
+                pact.buyer = msg.sender;
+                pact.buyerStake = requiredDeposit - pact.payment - pact.oracleFee;
+            }
         }
 
         pact.status = Status.FUNDED;
@@ -296,34 +330,38 @@ contract AgentPact is ReentrancyGuard {
         if (pact.initiator == Initiator.BUYER && pact.buyer != address(0)) {
             // Buyer created and has funds deposited. Adjust buyer's deposit.
             if (amendment.payment > oldPayment) {
-                // Payment increased — buyer must send additional ETH
                 uint256 extraPayment = amendment.payment - oldPayment;
                 uint256 extraStake = extraPayment / STAKE_PERCENT;
                 uint256 extraRequired = extraPayment + extraStake;
-                require(msg.value >= extraRequired, "Insufficient additional deposit");
-                pact.buyerStake += msg.value - extraPayment;
+                if (pact.paymentToken == address(0)) {
+                    require(msg.value >= extraRequired, "Insufficient additional deposit");
+                    pact.buyerStake += msg.value - extraPayment;
+                } else {
+                    IERC20(pact.paymentToken).safeTransferFrom(msg.sender, address(this), extraRequired);
+                    pact.buyerStake += extraStake;
+                }
             } else if (amendment.payment < oldPayment) {
-                // Payment decreased — refund excess to buyer
                 uint256 reducedPayment = oldPayment - amendment.payment;
                 uint256 reducedStake = reducedPayment / STAKE_PERCENT;
                 uint256 refund = reducedPayment + reducedStake;
                 pact.buyerStake -= reducedStake;
-                (bool sent, ) = pact.buyer.call{value: refund}("");
-                require(sent, "Failed to refund buyer");
+                _transferOut(pact.paymentToken, pact.buyer, refund);
             }
         } else if (pact.initiator == Initiator.SELLER && pact.seller != address(0)) {
             // Seller created and has stake deposited. Adjust seller's stake.
             if (amendment.payment > oldPayment) {
-                // Payment increased — seller's required stake increases
                 uint256 extraStake = (amendment.payment - oldPayment) / STAKE_PERCENT;
-                require(msg.value >= extraStake, "Insufficient additional stake");
-                pact.sellerStake += msg.value;
+                if (pact.paymentToken == address(0)) {
+                    require(msg.value >= extraStake, "Insufficient additional stake");
+                    pact.sellerStake += msg.value;
+                } else {
+                    IERC20(pact.paymentToken).safeTransferFrom(msg.sender, address(this), extraStake);
+                    pact.sellerStake += extraStake;
+                }
             } else if (amendment.payment < oldPayment) {
-                // Payment decreased — refund excess stake to seller
                 uint256 reducedStake = (oldPayment - amendment.payment) / STAKE_PERCENT;
                 pact.sellerStake -= reducedStake;
-                (bool sent, ) = pact.seller.call{value: reducedStake}("");
-                require(sent, "Failed to refund seller");
+                _transferOut(pact.paymentToken, pact.seller, reducedStake);
             }
         }
 
@@ -500,6 +538,16 @@ contract AgentPact is ReentrancyGuard {
         emit ReputationUpdated(user, r.completedAsBuyer, r.completedAsSeller, r.disputesLost, r.totalVolumeWei);
     }
 
+    function _transferOut(address token, address to, uint256 amount) internal {
+        if (amount == 0) return;
+        if (token == address(0)) {
+            (bool sent, ) = to.call{value: amount}("");
+            require(sent, "ETH transfer failed");
+        } else {
+            IERC20(token).safeTransfer(to, amount);
+        }
+    }
+
     function _payOracleFees(uint256 pactId) internal {
         Pact storage pact = pacts[pactId];
         if (pact.oracleFee == 0 || pact.oracleFeesPaid) return;
@@ -509,15 +557,13 @@ contract AgentPact is ReentrancyGuard {
         for (uint256 i = 0; i < pact.oracles.length; i++) {
             uint256 share;
             if (i == pact.oracles.length - 1) {
-                // Last oracle gets remainder to avoid dust from rounding
                 share = remaining;
             } else {
                 share = (pact.oracleFee * pact.oracleWeights[i]) / 100;
                 remaining -= share;
             }
             if (share > 0) {
-                (bool sent, ) = pact.oracles[i].call{value: share}("");
-                require(sent, "Failed to pay oracle fee");
+                _transferOut(pact.paymentToken, pact.oracles[i], share);
                 emit OracleFeePaid(pactId, pact.oracles[i], share);
             }
         }
@@ -536,11 +582,8 @@ contract AgentPact is ReentrancyGuard {
         // Buyer gets buyer stake back
         uint256 buyerReturn = pact.buyerStake;
 
-        (bool sentSeller, ) = pact.seller.call{value: sellerPayout}("");
-        require(sentSeller, "Failed to pay seller");
-
-        (bool sentBuyer, ) = pact.buyer.call{value: buyerReturn}("");
-        require(sentBuyer, "Failed to return buyer stake");
+        _transferOut(pact.paymentToken, pact.seller, sellerPayout);
+        _transferOut(pact.paymentToken, pact.buyer, buyerReturn);
     }
 
     // ──────────────────────────────────────────────
@@ -585,9 +628,7 @@ contract AgentPact is ReentrancyGuard {
             _penalizeReputation(pact.buyer);
 
             uint256 sellerPayout = pact.payment + unpaidFee + pact.sellerStake + pact.buyerStake;
-
-            (bool sent, ) = pact.seller.call{value: sellerPayout}("");
-            require(sent, "Failed to pay seller");
+            _transferOut(pact.paymentToken, pact.seller, sellerPayout);
         } else {
             pact.status = Status.REFUNDED;
 
@@ -595,9 +636,7 @@ contract AgentPact is ReentrancyGuard {
             _penalizeReputation(pact.seller);
 
             uint256 buyerRefund = pact.payment + unpaidFee + pact.buyerStake + pact.sellerStake;
-
-            (bool sent, ) = pact.buyer.call{value: buyerRefund}("");
-            require(sent, "Failed to refund buyer");
+            _transferOut(pact.paymentToken, pact.buyer, buyerRefund);
         }
 
         emit DisputeResolved(pactId, sellerWins);
@@ -618,12 +657,10 @@ contract AgentPact is ReentrancyGuard {
 
             if (pact.initiator == Initiator.BUYER) {
                 uint256 refund = pact.payment + pact.oracleFee + pact.buyerStake;
-                (bool sent, ) = pact.buyer.call{value: refund}("");
-                require(sent, "Failed to refund buyer");
+                _transferOut(pact.paymentToken, pact.buyer, refund);
             } else {
                 uint256 refund = pact.sellerStake;
-                (bool sent, ) = pact.seller.call{value: refund}("");
-                require(sent, "Failed to refund seller");
+                _transferOut(pact.paymentToken, pact.seller, refund);
             }
 
             emit TimeoutClaimed(pactId, msg.sender);
@@ -641,8 +678,7 @@ contract AgentPact is ReentrancyGuard {
 
             uint256 unpaidFee = pact.oracleFeesPaid ? 0 : pact.oracleFee;
             uint256 buyerRefund = pact.payment + unpaidFee + pact.buyerStake + pact.sellerStake;
-            (bool sent, ) = pact.buyer.call{value: buyerRefund}("");
-            require(sent, "Failed to refund buyer");
+            _transferOut(pact.paymentToken, pact.buyer, buyerRefund);
 
             emit TimeoutClaimed(pactId, msg.sender);
             emit PactRefunded(pactId);
@@ -669,7 +705,8 @@ contract AgentPact is ReentrancyGuard {
         uint256 reviewPeriod,
         uint256 verifiedAt,
         uint256 oracleFee,
-        bool oracleFeesPaid
+        bool oracleFeesPaid,
+        address paymentToken
     ) {
         Pact storage pact = pacts[pactId];
         return (
@@ -686,7 +723,8 @@ contract AgentPact is ReentrancyGuard {
             pact.reviewPeriod,
             pact.verifiedAt,
             pact.oracleFee,
-            pact.oracleFeesPaid
+            pact.oracleFeesPaid,
+            pact.paymentToken
         );
     }
 

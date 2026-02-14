@@ -50,6 +50,7 @@ export function registerQueryTools(server: McpServer, config: Config) {
                 : "not yet verified",
               oracleFee: ethers.formatEther(p.oracleFee) + " ETH",
               oracleFeesPaid: p.oracleFeesPaid,
+              paymentToken: p.paymentToken === ethers.ZeroAddress ? "ETH (native)" : p.paymentToken,
               oracles: oracles.map((addr: string, i: number) => ({
                 address: addr,
                 weight: Number(weights[i]),

@@ -44,7 +44,7 @@ describe("AgentPact", function () {
   ) {
     await pact
       .connect(buyer)
-      .createPact(INITIATOR_BUYER, SPEC_HASH, deadline, oracles, weights, threshold, PAYMENT, REVIEW_PERIOD, 0, {
+      .createPact(INITIATOR_BUYER, SPEC_HASH, deadline, oracles, weights, threshold, PAYMENT, REVIEW_PERIOD, 0, ethers.ZeroAddress, {
         value: BUYER_DEPOSIT,
       });
     return 0; // first pact ID
@@ -58,7 +58,7 @@ describe("AgentPact", function () {
   ) {
     await pact
       .connect(seller)
-      .createPact(INITIATOR_SELLER, SPEC_HASH, deadline, oracles, weights, threshold, PAYMENT, REVIEW_PERIOD, 0, {
+      .createPact(INITIATOR_SELLER, SPEC_HASH, deadline, oracles, weights, threshold, PAYMENT, REVIEW_PERIOD, 0, ethers.ZeroAddress, {
         value: SELLER_STAKE,
       });
     return 0;
@@ -108,7 +108,7 @@ describe("AgentPact", function () {
       await expect(
         pact
           .connect(buyer)
-          .createPact(INITIATOR_BUYER, SPEC_HASH, deadline, [oracle1.address], [100], 70, PAYMENT, REVIEW_PERIOD, 0, {
+          .createPact(INITIATOR_BUYER, SPEC_HASH, deadline, [oracle1.address], [100], 70, PAYMENT, REVIEW_PERIOD, 0, ethers.ZeroAddress, {
             value: BUYER_DEPOSIT,
           })
       ).to.emit(pact, "PactCreated");
@@ -116,7 +116,7 @@ describe("AgentPact", function () {
 
     it("should reject with no oracles", async function () {
       await expect(
-        pact.connect(buyer).createPact(INITIATOR_BUYER, SPEC_HASH, deadline, [], [], 70, PAYMENT, REVIEW_PERIOD, 0, {
+        pact.connect(buyer).createPact(INITIATOR_BUYER, SPEC_HASH, deadline, [], [], 70, PAYMENT, REVIEW_PERIOD, 0, ethers.ZeroAddress, {
           value: BUYER_DEPOSIT,
         })
       ).to.be.revertedWith("Need at least one oracle");
@@ -136,6 +136,7 @@ describe("AgentPact", function () {
             PAYMENT,
             REVIEW_PERIOD,
             0,
+            ethers.ZeroAddress,
             { value: BUYER_DEPOSIT }
           )
       ).to.be.revertedWith("Oracles/weights mismatch");
@@ -155,6 +156,7 @@ describe("AgentPact", function () {
             PAYMENT,
             REVIEW_PERIOD,
             0,
+            ethers.ZeroAddress,
             { value: BUYER_DEPOSIT }
           )
       ).to.be.revertedWith("Weights must sum to 100");
@@ -164,7 +166,7 @@ describe("AgentPact", function () {
       await expect(
         pact
           .connect(buyer)
-          .createPact(INITIATOR_BUYER, SPEC_HASH, deadline, [oracle1.address], [100], 101, PAYMENT, REVIEW_PERIOD, 0, {
+          .createPact(INITIATOR_BUYER, SPEC_HASH, deadline, [oracle1.address], [100], 101, PAYMENT, REVIEW_PERIOD, 0, ethers.ZeroAddress, {
             value: BUYER_DEPOSIT,
           })
       ).to.be.revertedWith("Threshold must be <= 100");
@@ -175,7 +177,7 @@ describe("AgentPact", function () {
       await expect(
         pact
           .connect(buyer)
-          .createPact(INITIATOR_BUYER, SPEC_HASH, pastDeadline, [oracle1.address], [100], 70, PAYMENT, REVIEW_PERIOD, 0, {
+          .createPact(INITIATOR_BUYER, SPEC_HASH, pastDeadline, [oracle1.address], [100], 70, PAYMENT, REVIEW_PERIOD, 0, ethers.ZeroAddress, {
             value: BUYER_DEPOSIT,
           })
       ).to.be.revertedWith("Deadline must be in the future");
@@ -185,7 +187,7 @@ describe("AgentPact", function () {
       await expect(
         pact
           .connect(buyer)
-          .createPact(INITIATOR_BUYER, SPEC_HASH, deadline, [oracle1.address], [100], 70, 0, REVIEW_PERIOD, 0, {
+          .createPact(INITIATOR_BUYER, SPEC_HASH, deadline, [oracle1.address], [100], 70, 0, REVIEW_PERIOD, 0, ethers.ZeroAddress, {
             value: 0,
           })
       ).to.be.revertedWith("Payment must be > 0");
@@ -196,7 +198,7 @@ describe("AgentPact", function () {
       await expect(
         pact
           .connect(buyer)
-          .createPact(INITIATOR_BUYER, SPEC_HASH, deadline, [oracle1.address], [100], 70, PAYMENT, REVIEW_PERIOD, 0, {
+          .createPact(INITIATOR_BUYER, SPEC_HASH, deadline, [oracle1.address], [100], 70, PAYMENT, REVIEW_PERIOD, 0, ethers.ZeroAddress, {
             value: lowDeposit,
           })
       ).to.be.revertedWith("Insufficient buyer deposit");
@@ -206,7 +208,7 @@ describe("AgentPact", function () {
       await createBuyerPact();
       await pact
         .connect(buyer)
-        .createPact(INITIATOR_BUYER, SPEC_HASH, deadline, [oracle1.address], [100], 70, PAYMENT, REVIEW_PERIOD, 0, {
+        .createPact(INITIATOR_BUYER, SPEC_HASH, deadline, [oracle1.address], [100], 70, PAYMENT, REVIEW_PERIOD, 0, ethers.ZeroAddress, {
           value: BUYER_DEPOSIT,
         });
 
@@ -219,7 +221,7 @@ describe("AgentPact", function () {
     it("should use default review period when 0 is passed", async function () {
       await pact
         .connect(buyer)
-        .createPact(INITIATOR_BUYER, SPEC_HASH, deadline, [oracle1.address], [100], 70, PAYMENT, 0, 0, {
+        .createPact(INITIATOR_BUYER, SPEC_HASH, deadline, [oracle1.address], [100], 70, PAYMENT, 0, 0, ethers.ZeroAddress, {
           value: BUYER_DEPOSIT,
         });
       const p = await pact.getPact(0);
@@ -250,7 +252,7 @@ describe("AgentPact", function () {
       await expect(
         pact
           .connect(seller)
-          .createPact(INITIATOR_SELLER, SPEC_HASH, deadline, [oracle1.address], [100], 70, PAYMENT, REVIEW_PERIOD, 0, {
+          .createPact(INITIATOR_SELLER, SPEC_HASH, deadline, [oracle1.address], [100], 70, PAYMENT, REVIEW_PERIOD, 0, ethers.ZeroAddress, {
             value: lowStake,
           })
       ).to.be.revertedWith("Insufficient seller stake");
@@ -1193,7 +1195,7 @@ describe("AgentPact", function () {
       deadline = (await time.latest()) + 86400;
       await pact
         .connect(buyer)
-        .createPact(INITIATOR_BUYER, SPEC_HASH, deadline, [oracle1.address], [100], 70, PAYMENT, REVIEW_PERIOD, 0, {
+        .createPact(INITIATOR_BUYER, SPEC_HASH, deadline, [oracle1.address], [100], 70, PAYMENT, REVIEW_PERIOD, 0, ethers.ZeroAddress, {
           value: BUYER_DEPOSIT,
         });
       await pact.connect(seller).acceptPact(1, { value: SELLER_STAKE });
@@ -1207,7 +1209,7 @@ describe("AgentPact", function () {
       deadline = (await time.latest()) + 86400;
       await pact
         .connect(buyer)
-        .createPact(INITIATOR_BUYER, SPEC_HASH, deadline, [oracle1.address], [100], 70, PAYMENT, REVIEW_PERIOD, 0, {
+        .createPact(INITIATOR_BUYER, SPEC_HASH, deadline, [oracle1.address], [100], 70, PAYMENT, REVIEW_PERIOD, 0, ethers.ZeroAddress, {
           value: BUYER_DEPOSIT,
         });
       await pact.connect(seller).acceptPact(2, { value: SELLER_STAKE });
@@ -1256,7 +1258,7 @@ describe("AgentPact", function () {
     it("should store oracleFee in pact", async function () {
       await pact
         .connect(buyer)
-        .createPact(INITIATOR_BUYER, SPEC_HASH, deadline, [oracle1.address], [100], 70, PAYMENT, REVIEW_PERIOD, ORACLE_FEE, {
+        .createPact(INITIATOR_BUYER, SPEC_HASH, deadline, [oracle1.address], [100], 70, PAYMENT, REVIEW_PERIOD, ORACLE_FEE, ethers.ZeroAddress, {
           value: BUYER_DEPOSIT_WITH_FEE,
         });
 
@@ -1268,7 +1270,7 @@ describe("AgentPact", function () {
     it("should require buyer to deposit payment + oracleFee + stake", async function () {
       // Just payment + stake (no oracle fee) should fail
       await expect(
-        pact.connect(buyer).createPact(INITIATOR_BUYER, SPEC_HASH, deadline, [oracle1.address], [100], 70, PAYMENT, REVIEW_PERIOD, ORACLE_FEE, {
+        pact.connect(buyer).createPact(INITIATOR_BUYER, SPEC_HASH, deadline, [oracle1.address], [100], 70, PAYMENT, REVIEW_PERIOD, ORACLE_FEE, ethers.ZeroAddress, {
           value: BUYER_DEPOSIT, // Missing oracle fee portion
         })
       ).to.be.revertedWith("Insufficient buyer deposit");
@@ -1277,7 +1279,7 @@ describe("AgentPact", function () {
     it("should pay single oracle the full fee on finalize", async function () {
       await pact
         .connect(buyer)
-        .createPact(INITIATOR_BUYER, SPEC_HASH, deadline, [oracle1.address], [100], 70, PAYMENT, REVIEW_PERIOD, ORACLE_FEE, {
+        .createPact(INITIATOR_BUYER, SPEC_HASH, deadline, [oracle1.address], [100], 70, PAYMENT, REVIEW_PERIOD, ORACLE_FEE, ethers.ZeroAddress, {
           value: BUYER_DEPOSIT_WITH_FEE,
         });
       await pact.connect(seller).acceptPact(0, { value: SELLER_STAKE });
@@ -1307,7 +1309,7 @@ describe("AgentPact", function () {
 
       await pact
         .connect(buyer)
-        .createPact(INITIATOR_BUYER, SPEC_HASH, deadline, [oracle1.address, oracle2.address], [70, 30], 70, PAYMENT, REVIEW_PERIOD, fee, {
+        .createPact(INITIATOR_BUYER, SPEC_HASH, deadline, [oracle1.address, oracle2.address], [70, 30], 70, PAYMENT, REVIEW_PERIOD, fee, ethers.ZeroAddress, {
           value: deposit,
         });
       await pact.connect(seller).acceptPact(0, { value: SELLER_STAKE });
@@ -1332,7 +1334,7 @@ describe("AgentPact", function () {
     it("should pay oracle fees even when verification fails threshold", async function () {
       await pact
         .connect(buyer)
-        .createPact(INITIATOR_BUYER, SPEC_HASH, deadline, [oracle1.address], [100], 70, PAYMENT, REVIEW_PERIOD, ORACLE_FEE, {
+        .createPact(INITIATOR_BUYER, SPEC_HASH, deadline, [oracle1.address], [100], 70, PAYMENT, REVIEW_PERIOD, ORACLE_FEE, ethers.ZeroAddress, {
           value: BUYER_DEPOSIT_WITH_FEE,
         });
       await pact.connect(seller).acceptPact(0, { value: SELLER_STAKE });
@@ -1355,7 +1357,7 @@ describe("AgentPact", function () {
     it("should not affect seller payout (seller still gets payment + stake)", async function () {
       await pact
         .connect(buyer)
-        .createPact(INITIATOR_BUYER, SPEC_HASH, deadline, [oracle1.address], [100], 70, PAYMENT, REVIEW_PERIOD, ORACLE_FEE, {
+        .createPact(INITIATOR_BUYER, SPEC_HASH, deadline, [oracle1.address], [100], 70, PAYMENT, REVIEW_PERIOD, ORACLE_FEE, ethers.ZeroAddress, {
           value: BUYER_DEPOSIT_WITH_FEE,
         });
       await pact.connect(seller).acceptPact(0, { value: SELLER_STAKE });
@@ -1375,7 +1377,7 @@ describe("AgentPact", function () {
     it("should refund oracle fee on NEGOTIATING timeout (buyer-initiated)", async function () {
       await pact
         .connect(buyer)
-        .createPact(INITIATOR_BUYER, SPEC_HASH, deadline, [oracle1.address], [100], 70, PAYMENT, REVIEW_PERIOD, ORACLE_FEE, {
+        .createPact(INITIATOR_BUYER, SPEC_HASH, deadline, [oracle1.address], [100], 70, PAYMENT, REVIEW_PERIOD, ORACLE_FEE, ethers.ZeroAddress, {
           value: BUYER_DEPOSIT_WITH_FEE,
         });
 
@@ -1393,7 +1395,7 @@ describe("AgentPact", function () {
     it("should refund unpaid oracle fee on delivery timeout", async function () {
       await pact
         .connect(buyer)
-        .createPact(INITIATOR_BUYER, SPEC_HASH, deadline, [oracle1.address], [100], 70, PAYMENT, REVIEW_PERIOD, ORACLE_FEE, {
+        .createPact(INITIATOR_BUYER, SPEC_HASH, deadline, [oracle1.address], [100], 70, PAYMENT, REVIEW_PERIOD, ORACLE_FEE, ethers.ZeroAddress, {
           value: BUYER_DEPOSIT_WITH_FEE,
         });
       await pact.connect(seller).acceptPact(0, { value: SELLER_STAKE });
@@ -1416,7 +1418,7 @@ describe("AgentPact", function () {
       // Dispute raised before verification (oracle fee not yet paid)
       await pact
         .connect(buyer)
-        .createPact(INITIATOR_BUYER, SPEC_HASH, deadline, [oracle1.address], [100], 70, PAYMENT, REVIEW_PERIOD, ORACLE_FEE, {
+        .createPact(INITIATOR_BUYER, SPEC_HASH, deadline, [oracle1.address], [100], 70, PAYMENT, REVIEW_PERIOD, ORACLE_FEE, ethers.ZeroAddress, {
           value: BUYER_DEPOSIT_WITH_FEE,
         });
       await pact.connect(seller).acceptPact(0, { value: SELLER_STAKE });
@@ -1439,7 +1441,7 @@ describe("AgentPact", function () {
       // Seller creates with 0 oracle fee deposit
       await pact
         .connect(seller)
-        .createPact(INITIATOR_SELLER, SPEC_HASH, deadline, [oracle1.address], [100], 70, PAYMENT, REVIEW_PERIOD, ORACLE_FEE, {
+        .createPact(INITIATOR_SELLER, SPEC_HASH, deadline, [oracle1.address], [100], 70, PAYMENT, REVIEW_PERIOD, ORACLE_FEE, ethers.ZeroAddress, {
           value: SELLER_STAKE,
         });
 
@@ -1515,9 +1517,9 @@ describe("AgentPact", function () {
       // Create 3 pacts
       await createBuyerPact();
       deadline = (await time.latest()) + 86400;
-      await pact.connect(buyer).createPact(INITIATOR_BUYER, SPEC_HASH, deadline, [oracle1.address], [100], 70, PAYMENT, REVIEW_PERIOD, 0, { value: BUYER_DEPOSIT });
+      await pact.connect(buyer).createPact(INITIATOR_BUYER, SPEC_HASH, deadline, [oracle1.address], [100], 70, PAYMENT, REVIEW_PERIOD, 0, ethers.ZeroAddress, { value: BUYER_DEPOSIT });
       deadline = (await time.latest()) + 86400;
-      await pact.connect(buyer).createPact(INITIATOR_BUYER, SPEC_HASH, deadline, [oracle1.address], [100], 70, PAYMENT, REVIEW_PERIOD, 0, { value: BUYER_DEPOSIT });
+      await pact.connect(buyer).createPact(INITIATOR_BUYER, SPEC_HASH, deadline, [oracle1.address], [100], 70, PAYMENT, REVIEW_PERIOD, 0, ethers.ZeroAddress, { value: BUYER_DEPOSIT });
 
       expect(await pact.getOpenPactCount()).to.equal(3);
 
@@ -1544,7 +1546,7 @@ describe("AgentPact", function () {
 
       // Seller creates pact 1
       deadline = (await time.latest()) + 86400;
-      await pact.connect(seller).createPact(INITIATOR_SELLER, SPEC_HASH, deadline, [oracle1.address], [100], 70, PAYMENT, REVIEW_PERIOD, 0, { value: SELLER_STAKE });
+      await pact.connect(seller).createPact(INITIATOR_SELLER, SPEC_HASH, deadline, [oracle1.address], [100], 70, PAYMENT, REVIEW_PERIOD, 0, ethers.ZeroAddress, { value: SELLER_STAKE });
       expect(await pact.getUserPactCount(seller.address)).to.equal(2);
 
       const sellerPacts = await pact.getPactsByAddress(seller.address, 0, 10);
@@ -1557,7 +1559,7 @@ describe("AgentPact", function () {
       // Create 5 pacts
       for (let i = 0; i < 5; i++) {
         deadline = (await time.latest()) + 86400;
-        await pact.connect(buyer).createPact(INITIATOR_BUYER, SPEC_HASH, deadline, [oracle1.address], [100], 70, PAYMENT, REVIEW_PERIOD, 0, { value: BUYER_DEPOSIT });
+        await pact.connect(buyer).createPact(INITIATOR_BUYER, SPEC_HASH, deadline, [oracle1.address], [100], 70, PAYMENT, REVIEW_PERIOD, 0, ethers.ZeroAddress, { value: BUYER_DEPOSIT });
       }
       expect(await pact.getOpenPactCount()).to.equal(5);
 
@@ -1581,12 +1583,262 @@ describe("AgentPact", function () {
     it("should paginate user pacts correctly", async function () {
       for (let i = 0; i < 3; i++) {
         deadline = (await time.latest()) + 86400;
-        await pact.connect(buyer).createPact(INITIATOR_BUYER, SPEC_HASH, deadline, [oracle1.address], [100], 70, PAYMENT, REVIEW_PERIOD, 0, { value: BUYER_DEPOSIT });
+        await pact.connect(buyer).createPact(INITIATOR_BUYER, SPEC_HASH, deadline, [oracle1.address], [100], 70, PAYMENT, REVIEW_PERIOD, 0, ethers.ZeroAddress, { value: BUYER_DEPOSIT });
       }
 
       const page = await pact.getPactsByAddress(buyer.address, 1, 1);
       expect(page.length).to.equal(1);
       expect(page[0]).to.equal(1); // second pact
+    });
+  });
+
+  // ──────────────────────────────────────────────
+  // ERC-20 Token Pacts
+  // ──────────────────────────────────────────────
+
+  describe("ERC-20 Token Pacts", function () {
+    let token: any;
+    const TOKEN_PAYMENT = ethers.parseEther("100"); // 100 tokens
+    const TOKEN_BUYER_DEPOSIT = TOKEN_PAYMENT + TOKEN_PAYMENT / STAKE_PERCENT; // 110 tokens
+    const TOKEN_SELLER_STAKE = TOKEN_PAYMENT / STAKE_PERCENT; // 10 tokens
+    const TOKEN_ORACLE_FEE = ethers.parseEther("5"); // 5 tokens
+
+    beforeEach(async function () {
+      const MockERC20 = await ethers.getContractFactory("MockERC20");
+      token = await MockERC20.deploy("TestToken", "TT");
+
+      // Mint tokens to buyer and seller
+      await token.mint(buyer.address, ethers.parseEther("10000"));
+      await token.mint(seller.address, ethers.parseEther("10000"));
+
+      // Approve the pact contract to spend tokens
+      await token.connect(buyer).approve(await pact.getAddress(), ethers.MaxUint256);
+      await token.connect(seller).approve(await pact.getAddress(), ethers.MaxUint256);
+    });
+
+    it("should create a buyer-initiated ERC-20 pact", async function () {
+      await pact
+        .connect(buyer)
+        .createPact(INITIATOR_BUYER, SPEC_HASH, deadline, [oracle1.address], [100], 70, TOKEN_PAYMENT, REVIEW_PERIOD, 0, await token.getAddress());
+
+      const p = await pact.getPact(0);
+      expect(p.buyer).to.equal(buyer.address);
+      expect(p.seller).to.equal(ethers.ZeroAddress);
+      expect(p.payment).to.equal(TOKEN_PAYMENT);
+      expect(p.paymentToken).to.equal(await token.getAddress());
+      expect(p.buyerStake).to.equal(TOKEN_PAYMENT / STAKE_PERCENT);
+
+      // Contract should hold the tokens
+      const contractBalance = await token.balanceOf(await pact.getAddress());
+      expect(contractBalance).to.equal(TOKEN_BUYER_DEPOSIT);
+    });
+
+    it("should reject ETH sent for token pact", async function () {
+      await expect(
+        pact
+          .connect(buyer)
+          .createPact(INITIATOR_BUYER, SPEC_HASH, deadline, [oracle1.address], [100], 70, TOKEN_PAYMENT, REVIEW_PERIOD, 0, await token.getAddress(), {
+            value: TOKEN_BUYER_DEPOSIT,
+          })
+      ).to.be.revertedWith("ETH not accepted for token pact");
+    });
+
+    it("should create a seller-initiated ERC-20 pact", async function () {
+      await pact
+        .connect(seller)
+        .createPact(INITIATOR_SELLER, SPEC_HASH, deadline, [oracle1.address], [100], 70, TOKEN_PAYMENT, REVIEW_PERIOD, 0, await token.getAddress());
+
+      const p = await pact.getPact(0);
+      expect(p.seller).to.equal(seller.address);
+      expect(p.buyer).to.equal(ethers.ZeroAddress);
+      expect(p.paymentToken).to.equal(await token.getAddress());
+      expect(p.sellerStake).to.equal(TOKEN_SELLER_STAKE);
+    });
+
+    it("should allow seller to accept a buyer-initiated ERC-20 pact", async function () {
+      await pact
+        .connect(buyer)
+        .createPact(INITIATOR_BUYER, SPEC_HASH, deadline, [oracle1.address], [100], 70, TOKEN_PAYMENT, REVIEW_PERIOD, 0, await token.getAddress());
+
+      await pact.connect(seller).acceptPact(0);
+
+      const p = await pact.getPact(0);
+      expect(p.seller).to.equal(seller.address);
+      expect(p.status).to.equal(1); // FUNDED
+      expect(p.sellerStake).to.equal(TOKEN_SELLER_STAKE);
+
+      // Contract should hold buyer deposit + seller stake
+      const contractBalance = await token.balanceOf(await pact.getAddress());
+      expect(contractBalance).to.equal(TOKEN_BUYER_DEPOSIT + TOKEN_SELLER_STAKE);
+    });
+
+    it("should allow buyer to accept a seller-initiated ERC-20 pact", async function () {
+      await pact
+        .connect(seller)
+        .createPact(INITIATOR_SELLER, SPEC_HASH, deadline, [oracle1.address], [100], 70, TOKEN_PAYMENT, REVIEW_PERIOD, 0, await token.getAddress());
+
+      await pact.connect(buyer).acceptPact(0);
+
+      const p = await pact.getPact(0);
+      expect(p.buyer).to.equal(buyer.address);
+      expect(p.status).to.equal(1); // FUNDED
+    });
+
+    it("should complete full ERC-20 pact lifecycle (create → accept → work → verify → approve)", async function () {
+      const tokenAddr = await token.getAddress();
+
+      // Create and accept
+      await pact
+        .connect(buyer)
+        .createPact(INITIATOR_BUYER, SPEC_HASH, deadline, [oracle1.address], [100], 70, TOKEN_PAYMENT, REVIEW_PERIOD, 0, tokenAddr);
+      await pact.connect(seller).acceptPact(0);
+
+      // Work flow
+      await pact.connect(seller).startWork(0);
+      await pact.connect(seller).submitWork(0, PROOF_HASH);
+      await pact.connect(oracle1).submitVerification(0, 85, VERIFICATION_PROOF);
+      await pact.connect(other).finalizeVerification(0);
+
+      const sellerBalBefore = await token.balanceOf(seller.address);
+      const buyerBalBefore = await token.balanceOf(buyer.address);
+
+      // Buyer approves
+      await pact.connect(buyer).approveWork(0);
+
+      const p = await pact.getPact(0);
+      expect(p.status).to.equal(4); // COMPLETED
+
+      // Seller gets payment + seller stake
+      const sellerBalAfter = await token.balanceOf(seller.address);
+      expect(sellerBalAfter - sellerBalBefore).to.equal(TOKEN_PAYMENT + TOKEN_SELLER_STAKE);
+
+      // Buyer gets buyer stake back
+      const buyerBalAfter = await token.balanceOf(buyer.address);
+      expect(buyerBalAfter - buyerBalBefore).to.equal(TOKEN_PAYMENT / STAKE_PERCENT);
+    });
+
+    it("should handle ERC-20 pact timeout refund", async function () {
+      const tokenAddr = await token.getAddress();
+
+      await pact
+        .connect(buyer)
+        .createPact(INITIATOR_BUYER, SPEC_HASH, deadline, [oracle1.address], [100], 70, TOKEN_PAYMENT, REVIEW_PERIOD, 0, tokenAddr);
+
+      await time.increaseTo(deadline + 1);
+
+      const buyerBalBefore = await token.balanceOf(buyer.address);
+      await pact.connect(other).claimTimeout(0);
+      const buyerBalAfter = await token.balanceOf(buyer.address);
+
+      // Buyer gets back payment + buyerStake
+      expect(buyerBalAfter - buyerBalBefore).to.equal(TOKEN_BUYER_DEPOSIT);
+    });
+
+    it("should handle ERC-20 pact dispute resolution (buyer wins)", async function () {
+      const tokenAddr = await token.getAddress();
+
+      await pact
+        .connect(buyer)
+        .createPact(INITIATOR_BUYER, SPEC_HASH, deadline, [oracle1.address], [100], 70, TOKEN_PAYMENT, REVIEW_PERIOD, 0, tokenAddr);
+      await pact.connect(seller).acceptPact(0);
+      await pact.connect(seller).startWork(0);
+      await pact.connect(buyer).raiseDispute(0, arbitrator.address);
+
+      const buyerBalBefore = await token.balanceOf(buyer.address);
+      await pact.connect(arbitrator).resolveDispute(0, false);
+      const buyerBalAfter = await token.balanceOf(buyer.address);
+
+      // Buyer gets payment + buyerStake + sellerStake
+      expect(buyerBalAfter - buyerBalBefore).to.equal(
+        TOKEN_PAYMENT + TOKEN_PAYMENT / STAKE_PERCENT + TOKEN_SELLER_STAKE
+      );
+    });
+
+    it("should handle ERC-20 pact dispute resolution (seller wins)", async function () {
+      const tokenAddr = await token.getAddress();
+
+      await pact
+        .connect(buyer)
+        .createPact(INITIATOR_BUYER, SPEC_HASH, deadline, [oracle1.address], [100], 70, TOKEN_PAYMENT, REVIEW_PERIOD, 0, tokenAddr);
+      await pact.connect(seller).acceptPact(0);
+      await pact.connect(seller).startWork(0);
+      await pact.connect(buyer).raiseDispute(0, arbitrator.address);
+
+      const sellerBalBefore = await token.balanceOf(seller.address);
+      await pact.connect(arbitrator).resolveDispute(0, true);
+      const sellerBalAfter = await token.balanceOf(seller.address);
+
+      // Seller gets payment + buyerStake + sellerStake
+      expect(sellerBalAfter - sellerBalBefore).to.equal(
+        TOKEN_PAYMENT + TOKEN_PAYMENT / STAKE_PERCENT + TOKEN_SELLER_STAKE
+      );
+    });
+
+    it("should handle ERC-20 pact with oracle fees", async function () {
+      const tokenAddr = await token.getAddress();
+
+      await pact
+        .connect(buyer)
+        .createPact(INITIATOR_BUYER, SPEC_HASH, deadline, [oracle1.address], [100], 70, TOKEN_PAYMENT, REVIEW_PERIOD, TOKEN_ORACLE_FEE, tokenAddr);
+      await pact.connect(seller).acceptPact(0);
+      await pact.connect(seller).startWork(0);
+      await pact.connect(seller).submitWork(0, PROOF_HASH);
+      await pact.connect(oracle1).submitVerification(0, 85, VERIFICATION_PROOF);
+
+      const oracleBalBefore = await token.balanceOf(oracle1.address);
+      await pact.connect(other).finalizeVerification(0);
+      const oracleBalAfter = await token.balanceOf(oracle1.address);
+
+      // Oracle gets the full fee in tokens
+      expect(oracleBalAfter - oracleBalBefore).to.equal(TOKEN_ORACLE_FEE);
+
+      const p = await pact.getPact(0);
+      expect(p.oracleFeesPaid).to.be.true;
+    });
+
+    it("should handle ERC-20 auto-approve after review period", async function () {
+      const tokenAddr = await token.getAddress();
+
+      await pact
+        .connect(buyer)
+        .createPact(INITIATOR_BUYER, SPEC_HASH, deadline, [oracle1.address], [100], 70, TOKEN_PAYMENT, REVIEW_PERIOD, 0, tokenAddr);
+      await pact.connect(seller).acceptPact(0);
+      await pact.connect(seller).startWork(0);
+      await pact.connect(seller).submitWork(0, PROOF_HASH);
+      await pact.connect(oracle1).submitVerification(0, 85, VERIFICATION_PROOF);
+      await pact.connect(other).finalizeVerification(0);
+
+      await time.increase(REVIEW_PERIOD + 1);
+
+      const sellerBalBefore = await token.balanceOf(seller.address);
+      await pact.connect(other).autoApprove(0);
+      const sellerBalAfter = await token.balanceOf(seller.address);
+
+      expect(sellerBalAfter - sellerBalBefore).to.equal(TOKEN_PAYMENT + TOKEN_SELLER_STAKE);
+
+      const p = await pact.getPact(0);
+      expect(p.status).to.equal(4); // COMPLETED
+    });
+
+    it("should handle delivery timeout with ERC-20 (buyer gets seller stake)", async function () {
+      const tokenAddr = await token.getAddress();
+
+      await pact
+        .connect(buyer)
+        .createPact(INITIATOR_BUYER, SPEC_HASH, deadline, [oracle1.address], [100], 70, TOKEN_PAYMENT, REVIEW_PERIOD, 0, tokenAddr);
+      await pact.connect(seller).acceptPact(0);
+      await pact.connect(seller).startWork(0);
+
+      await time.increaseTo(deadline + 1);
+
+      const buyerBalBefore = await token.balanceOf(buyer.address);
+      await pact.connect(other).claimTimeout(0);
+      const buyerBalAfter = await token.balanceOf(buyer.address);
+
+      // Buyer gets: payment + buyerStake + sellerStake (forfeited)
+      expect(buyerBalAfter - buyerBalBefore).to.equal(
+        TOKEN_PAYMENT + TOKEN_PAYMENT / STAKE_PERCENT + TOKEN_SELLER_STAKE
+      );
     });
   });
 });
