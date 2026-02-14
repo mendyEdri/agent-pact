@@ -72,6 +72,11 @@ contract AgentPact is ReentrancyGuard {
 
     mapping(address => Reputation) public reputation;
 
+    // ── Discovery indexes ──
+    uint256[] internal _openPactIds;                      // Pacts in NEGOTIATING status
+    mapping(uint256 => uint256) internal _openPactIndex;  // pactId → index in _openPactIds (1-based, 0 = not present)
+    mapping(address => uint256[]) internal _userPactIds;  // All pacts where address is buyer or seller
+
     event PactCreated(
         uint256 indexed pactId,
         address indexed creator,
@@ -182,6 +187,11 @@ contract AgentPact is ReentrancyGuard {
             pact.sellerStake = msg.value;
         }
 
+        // Index: add to open pacts and creator's pact list
+        _openPactIds.push(pactId);
+        _openPactIndex[pactId] = _openPactIds.length; // 1-based
+        _userPactIds[msg.sender].push(pactId);
+
         emit PactCreated(pactId, msg.sender, _initiator, specHash, paymentAmount, deadline);
         return pactId;
     }
@@ -215,6 +225,11 @@ contract AgentPact is ReentrancyGuard {
         }
 
         pact.status = Status.FUNDED;
+
+        // Index: remove from open pacts, add accepter to user list
+        _removeOpenPact(pactId);
+        _userPactIds[msg.sender].push(pactId);
+
         emit PactAccepted(pactId, msg.sender, pact.initiator);
     }
 
@@ -566,6 +581,7 @@ contract AgentPact is ReentrancyGuard {
         if (pact.status == Status.NEGOTIATING) {
             // No one accepted — refund creator
             pact.status = Status.REFUNDED;
+            _removeOpenPact(pactId);
 
             if (pact.initiator == Initiator.BUYER) {
                 uint256 refund = pact.payment + pact.buyerStake;
@@ -660,5 +676,53 @@ contract AgentPact is ReentrancyGuard {
     ) {
         Reputation storage r = reputation[user];
         return (r.completedAsBuyer, r.completedAsSeller, r.disputesLost, r.totalVolumeWei);
+    }
+
+    // ──────────────────────────────────────────────
+    // Discovery
+    // ──────────────────────────────────────────────
+
+    function _removeOpenPact(uint256 pactId) internal {
+        uint256 idx = _openPactIndex[pactId];
+        if (idx == 0) return; // not in list
+        uint256 arrayIdx = idx - 1;
+        uint256 lastIdx = _openPactIds.length - 1;
+        if (arrayIdx != lastIdx) {
+            uint256 lastPactId = _openPactIds[lastIdx];
+            _openPactIds[arrayIdx] = lastPactId;
+            _openPactIndex[lastPactId] = idx;
+        }
+        _openPactIds.pop();
+        _openPactIndex[pactId] = 0;
+    }
+
+    function getOpenPacts(uint256 offset, uint256 limit) external view returns (uint256[] memory pactIds) {
+        uint256 total = _openPactIds.length;
+        if (offset >= total) return new uint256[](0);
+        uint256 end = offset + limit;
+        if (end > total) end = total;
+        pactIds = new uint256[](end - offset);
+        for (uint256 i = offset; i < end; i++) {
+            pactIds[i - offset] = _openPactIds[i];
+        }
+    }
+
+    function getOpenPactCount() external view returns (uint256) {
+        return _openPactIds.length;
+    }
+
+    function getPactsByAddress(address user, uint256 offset, uint256 limit) external view returns (uint256[] memory pactIds) {
+        uint256 total = _userPactIds[user].length;
+        if (offset >= total) return new uint256[](0);
+        uint256 end = offset + limit;
+        if (end > total) end = total;
+        pactIds = new uint256[](end - offset);
+        for (uint256 i = offset; i < end; i++) {
+            pactIds[i - offset] = _userPactIds[user][i];
+        }
+    }
+
+    function getUserPactCount(address user) external view returns (uint256) {
+        return _userPactIds[user].length;
     }
 }

@@ -13,6 +13,7 @@ import { registerOracleTools } from "./tools/oracle.js";
 import { registerDisputeTools } from "./tools/dispute.js";
 import { registerFinalizeTools } from "./tools/finalize.js";
 import { registerWalletTools } from "./tools/wallet.js";
+import { registerDiscoveryTools } from "./tools/discovery.js";
 import { registerResources } from "./resources/contracts.js";
 
 async function main() {
@@ -49,6 +50,7 @@ async function main() {
   registerDisputeTools(server, config, executor);
   registerFinalizeTools(server, config, executor);
   registerWalletTools(server, config, policy, tracker);
+  registerDiscoveryTools(server, config);
 
   // Register resources
   registerResources(server, config);

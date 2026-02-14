@@ -39,6 +39,10 @@ export const AGENT_PACT_ABI = [
   "function getVerification(uint256 pactId, address oracle) view returns (uint8 score, bool hasSubmitted, bytes32 proof)",
   "function getAmendment(uint256 pactId) view returns (uint256 payment, uint256 deadline_, bytes32 specHash, address proposedBy, bool pending)",
   "function getReputation(address user) view returns (uint256 completedAsBuyer, uint256 completedAsSeller, uint256 disputesLost, uint256 totalVolumeWei)",
+  "function getOpenPacts(uint256 offset, uint256 limit) view returns (uint256[])",
+  "function getOpenPactCount() view returns (uint256)",
+  "function getPactsByAddress(address user, uint256 offset, uint256 limit) view returns (uint256[])",
+  "function getUserPactCount(address user) view returns (uint256)",
 
   // Events
   "event PactCreated(uint256 indexed pactId, address indexed creator, uint8 initiator, bytes32 specHash, uint256 payment, uint256 deadline)",
@@ -71,6 +75,8 @@ export const ORACLE_REGISTRY_ABI = [
   "function getOracleStake(address oracle) view returns (uint256)",
   "function getOracleCapabilities(address oracle) view returns (string[])",
   "function getOracleCount() view returns (uint256)",
+  "function getOraclesByCapability(string capability) view returns (address[])",
+  "function getRegisteredOracles(uint256 offset, uint256 limit) view returns (address[], uint256[], uint256[])",
   "function minStake() view returns (uint256)",
 
   "event OracleRegistered(address indexed oracle, uint256 stake, string[] capabilities)",

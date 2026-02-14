@@ -1238,4 +1238,116 @@ describe("AgentPact", function () {
         .withArgs(seller.address, 0, 1, 0, PAYMENT);
     });
   });
+
+  // ──────────────────────────────────────────────
+  // Discovery
+  // ──────────────────────────────────────────────
+
+  describe("Discovery", function () {
+    it("should track open pacts on creation", async function () {
+      await createBuyerPact();
+      expect(await pact.getOpenPactCount()).to.equal(1);
+      const openIds = await pact.getOpenPacts(0, 10);
+      expect(openIds.length).to.equal(1);
+      expect(openIds[0]).to.equal(0);
+    });
+
+    it("should remove from open pacts when accepted", async function () {
+      await createBuyerPact();
+      expect(await pact.getOpenPactCount()).to.equal(1);
+
+      await pact.connect(seller).acceptPact(0, { value: SELLER_STAKE });
+      expect(await pact.getOpenPactCount()).to.equal(0);
+      const openIds = await pact.getOpenPacts(0, 10);
+      expect(openIds.length).to.equal(0);
+    });
+
+    it("should remove from open pacts on NEGOTIATING timeout", async function () {
+      await createBuyerPact();
+      expect(await pact.getOpenPactCount()).to.equal(1);
+
+      await time.increaseTo(deadline + 1);
+      await pact.connect(other).claimTimeout(0);
+
+      expect(await pact.getOpenPactCount()).to.equal(0);
+    });
+
+    it("should handle multiple open pacts with swap-and-pop removal", async function () {
+      // Create 3 pacts
+      await createBuyerPact();
+      deadline = (await time.latest()) + 86400;
+      await pact.connect(buyer).createPact(INITIATOR_BUYER, SPEC_HASH, deadline, [oracle1.address], [100], 70, PAYMENT, REVIEW_PERIOD, { value: BUYER_DEPOSIT });
+      deadline = (await time.latest()) + 86400;
+      await pact.connect(buyer).createPact(INITIATOR_BUYER, SPEC_HASH, deadline, [oracle1.address], [100], 70, PAYMENT, REVIEW_PERIOD, { value: BUYER_DEPOSIT });
+
+      expect(await pact.getOpenPactCount()).to.equal(3);
+
+      // Accept pact 0 (removes from middle via swap-and-pop)
+      await pact.connect(seller).acceptPact(0, { value: SELLER_STAKE });
+      expect(await pact.getOpenPactCount()).to.equal(2);
+
+      const openIds = await pact.getOpenPacts(0, 10);
+      expect(openIds.length).to.equal(2);
+      // Pact 2 was swapped into position 0, pact 1 stays
+      expect(openIds).to.include(1n);
+      expect(openIds).to.include(2n);
+    });
+
+    it("should track pacts per address", async function () {
+      // Buyer creates pact 0
+      await createBuyerPact();
+      expect(await pact.getUserPactCount(buyer.address)).to.equal(1);
+      expect(await pact.getUserPactCount(seller.address)).to.equal(0);
+
+      // Seller accepts pact 0
+      await pact.connect(seller).acceptPact(0, { value: SELLER_STAKE });
+      expect(await pact.getUserPactCount(seller.address)).to.equal(1);
+
+      // Seller creates pact 1
+      deadline = (await time.latest()) + 86400;
+      await pact.connect(seller).createPact(INITIATOR_SELLER, SPEC_HASH, deadline, [oracle1.address], [100], 70, PAYMENT, REVIEW_PERIOD, { value: SELLER_STAKE });
+      expect(await pact.getUserPactCount(seller.address)).to.equal(2);
+
+      const sellerPacts = await pact.getPactsByAddress(seller.address, 0, 10);
+      expect(sellerPacts.length).to.equal(2);
+      expect(sellerPacts[0]).to.equal(0);
+      expect(sellerPacts[1]).to.equal(1);
+    });
+
+    it("should paginate open pacts correctly", async function () {
+      // Create 5 pacts
+      for (let i = 0; i < 5; i++) {
+        deadline = (await time.latest()) + 86400;
+        await pact.connect(buyer).createPact(INITIATOR_BUYER, SPEC_HASH, deadline, [oracle1.address], [100], 70, PAYMENT, REVIEW_PERIOD, { value: BUYER_DEPOSIT });
+      }
+      expect(await pact.getOpenPactCount()).to.equal(5);
+
+      // Page 1: offset 0, limit 2
+      const page1 = await pact.getOpenPacts(0, 2);
+      expect(page1.length).to.equal(2);
+
+      // Page 2: offset 2, limit 2
+      const page2 = await pact.getOpenPacts(2, 2);
+      expect(page2.length).to.equal(2);
+
+      // Page 3: offset 4, limit 2 (only 1 left)
+      const page3 = await pact.getOpenPacts(4, 2);
+      expect(page3.length).to.equal(1);
+
+      // Beyond range
+      const page4 = await pact.getOpenPacts(10, 2);
+      expect(page4.length).to.equal(0);
+    });
+
+    it("should paginate user pacts correctly", async function () {
+      for (let i = 0; i < 3; i++) {
+        deadline = (await time.latest()) + 86400;
+        await pact.connect(buyer).createPact(INITIATOR_BUYER, SPEC_HASH, deadline, [oracle1.address], [100], 70, PAYMENT, REVIEW_PERIOD, { value: BUYER_DEPOSIT });
+      }
+
+      const page = await pact.getPactsByAddress(buyer.address, 1, 1);
+      expect(page.length).to.equal(1);
+      expect(page[0]).to.equal(1); // second pact
+    });
+  });
 });

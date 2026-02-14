@@ -102,4 +102,68 @@ contract OracleRegistry is Ownable, ReentrancyGuard {
     function getOracleCount() external view returns (uint256) {
         return oracleList.length;
     }
+
+    function getOraclesByCapability(string calldata capability) external view returns (address[] memory) {
+        // First pass: count matches
+        uint256 count = 0;
+        for (uint256 i = 0; i < oracleList.length; i++) {
+            Oracle storage o = oracles[oracleList[i]];
+            if (!o.isRegistered) continue;
+            for (uint256 j = 0; j < o.capabilities.length; j++) {
+                if (keccak256(bytes(o.capabilities[j])) == keccak256(bytes(capability))) {
+                    count++;
+                    break;
+                }
+            }
+        }
+        // Second pass: collect matches
+        address[] memory result = new address[](count);
+        uint256 idx = 0;
+        for (uint256 i = 0; i < oracleList.length; i++) {
+            Oracle storage o = oracles[oracleList[i]];
+            if (!o.isRegistered) continue;
+            for (uint256 j = 0; j < o.capabilities.length; j++) {
+                if (keccak256(bytes(o.capabilities[j])) == keccak256(bytes(capability))) {
+                    result[idx++] = oracleList[i];
+                    break;
+                }
+            }
+        }
+        return result;
+    }
+
+    function getRegisteredOracles(uint256 offset, uint256 limit) external view returns (
+        address[] memory addresses,
+        uint256[] memory stakes,
+        uint256[] memory verifications
+    ) {
+        // Collect only registered oracles
+        uint256 regCount = 0;
+        for (uint256 i = 0; i < oracleList.length; i++) {
+            if (oracles[oracleList[i]].isRegistered) regCount++;
+        }
+        if (offset >= regCount) {
+            return (new address[](0), new uint256[](0), new uint256[](0));
+        }
+        uint256 end = offset + limit;
+        if (end > regCount) end = regCount;
+        uint256 size = end - offset;
+
+        addresses = new address[](size);
+        stakes = new uint256[](size);
+        verifications = new uint256[](size);
+
+        uint256 found = 0;
+        uint256 written = 0;
+        for (uint256 i = 0; i < oracleList.length && written < size; i++) {
+            if (!oracles[oracleList[i]].isRegistered) continue;
+            if (found >= offset) {
+                addresses[written] = oracleList[i];
+                stakes[written] = oracles[oracleList[i]].stake;
+                verifications[written] = oracles[oracleList[i]].completedVerifications;
+                written++;
+            }
+            found++;
+        }
+    }
 }

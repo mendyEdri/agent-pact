@@ -154,6 +154,83 @@ describe("OracleRegistry", function () {
     });
   });
 
+  describe("Discovery", function () {
+    it("should find oracles by capability", async function () {
+      await registry.connect(oracle1).registerOracle(["code-review", "testing"], { value: MIN_STAKE });
+      await registry.connect(oracle2).registerOracle(["testing", "security-audit"], { value: MIN_STAKE });
+
+      const codeReviewOracles = await registry.getOraclesByCapability("code-review");
+      expect(codeReviewOracles.length).to.equal(1);
+      expect(codeReviewOracles[0]).to.equal(oracle1.address);
+
+      const testingOracles = await registry.getOraclesByCapability("testing");
+      expect(testingOracles.length).to.equal(2);
+      expect(testingOracles).to.include(oracle1.address);
+      expect(testingOracles).to.include(oracle2.address);
+
+      const securityOracles = await registry.getOraclesByCapability("security-audit");
+      expect(securityOracles.length).to.equal(1);
+      expect(securityOracles[0]).to.equal(oracle2.address);
+    });
+
+    it("should return empty for unknown capability", async function () {
+      await registry.connect(oracle1).registerOracle(["code-review"], { value: MIN_STAKE });
+      const result = await registry.getOraclesByCapability("unknown");
+      expect(result.length).to.equal(0);
+    });
+
+    it("should exclude unregistered oracles from capability search", async function () {
+      await registry.connect(oracle1).registerOracle(["code-review"], { value: MIN_STAKE });
+      await registry.connect(oracle2).registerOracle(["code-review"], { value: MIN_STAKE });
+
+      // Unregister oracle1
+      await registry.connect(oracle1).unregisterOracle();
+
+      const result = await registry.getOraclesByCapability("code-review");
+      expect(result.length).to.equal(1);
+      expect(result[0]).to.equal(oracle2.address);
+    });
+
+    it("should list registered oracles with pagination", async function () {
+      await registry.connect(oracle1).registerOracle(["code-review"], { value: MIN_STAKE });
+      await registry.connect(oracle2).registerOracle(["testing"], { value: MIN_STAKE });
+
+      const [addresses, stakes, verifications] = await registry.getRegisteredOracles(0, 10);
+      expect(addresses.length).to.equal(2);
+      expect(addresses[0]).to.equal(oracle1.address);
+      expect(addresses[1]).to.equal(oracle2.address);
+      expect(stakes[0]).to.equal(MIN_STAKE);
+      expect(verifications[0]).to.equal(0);
+    });
+
+    it("should skip unregistered oracles in paginated list", async function () {
+      await registry.connect(oracle1).registerOracle(["code-review"], { value: MIN_STAKE });
+      await registry.connect(oracle2).registerOracle(["testing"], { value: MIN_STAKE });
+      await registry.connect(oracle1).unregisterOracle();
+
+      const [addresses] = await registry.getRegisteredOracles(0, 10);
+      expect(addresses.length).to.equal(1);
+      expect(addresses[0]).to.equal(oracle2.address);
+    });
+
+    it("should paginate registered oracles correctly", async function () {
+      await registry.connect(oracle1).registerOracle(["code-review"], { value: MIN_STAKE });
+      await registry.connect(oracle2).registerOracle(["testing"], { value: MIN_STAKE });
+
+      const [page1] = await registry.getRegisteredOracles(0, 1);
+      expect(page1.length).to.equal(1);
+      expect(page1[0]).to.equal(oracle1.address);
+
+      const [page2] = await registry.getRegisteredOracles(1, 1);
+      expect(page2.length).to.equal(1);
+      expect(page2[0]).to.equal(oracle2.address);
+
+      // Beyond range
+      const [page3] = await registry.getRegisteredOracles(5, 10);
+      expect(page3.length).to.equal(0);
+    });
+  });
+
   describe("Admin", function () {
     it("should allow owner to update min stake", async function () {
       const newMin = ethers.parseEther("0.5");
