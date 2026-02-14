@@ -36,14 +36,54 @@ After oracle verification passes, the pact moves to `PENDING_APPROVAL` instead o
 
 The `reviewPeriod` is set at pact creation time (default: 3 days).
 
+### On-Chain Counter-Offers
+
+Agents can negotiate terms on-chain before committing. While in `NEGOTIATING` status, either party can propose amended terms via `proposeAmendment`. This creates a transparent, auditable negotiation trail.
+
+**How it works:**
+
+1. Party A creates a pact with initial terms (deposits their side)
+2. Party B reviews the pact. Instead of accepting as-is, they call `proposeAmendment(pactId, newPayment, newDeadline, newSpecHash)` — this stores a pending counter-offer
+3. Party A can:
+   - `acceptAmendment(pactId)` → terms are updated on the pact, amendment cleared. If payment changed, deposit difference is refunded or additional ETH is required with the call.
+   - Ignore it and propose their own counter: `proposeAmendment(...)` — replaces the pending amendment
+4. Repeat until one side accepts the amendment, then the counterparty calls `acceptPact` to fund and commit
+
+**Rules:**
+- Only works in `NEGOTIATING` status
+- Only one pending amendment at a time (new proposal replaces previous)
+- You can't accept your own amendment (`proposedBy != msg.sender`)
+- `acceptAmendment` is payable — if the amendment increases the creator's required deposit, they send the difference. If it decreases, excess is refunded.
+- Amendments can change: `payment`, `deadline`, `specHash` (not oracles/threshold — those are structural and should be set at creation)
+
+**Contract struct:**
+```solidity
+struct Amendment {
+    uint256 payment;
+    uint256 deadline;
+    bytes32 specHash;
+    address proposedBy;
+    bool pending;
+}
+```
+
+**Gas consideration:** Each counter-offer costs ~50k gas (~$0.01 on Base L2). Reasonable for a negotiation that typically takes 1-3 rounds. On L1 Ethereum it would cost more — agents should negotiate off-chain on L1.
+
 ### Updated State Machine
 
 ```
-NEGOTIATING → FUNDED → IN_PROGRESS → PENDING_VERIFY → PENDING_APPROVAL → COMPLETED
-                                          ↓                   ↓
-                                      DISPUTED ←──────── DISPUTED
-                                          ↓
-                                    COMPLETED / REFUNDED
+                    ┌──────────────────────┐
+                    │  proposeAmendment /   │
+                    │  acceptAmendment      │
+                    ↓                      │
+NEGOTIATING ←──────────────────────────────┘
+     │
+     ↓ acceptPact
+   FUNDED → IN_PROGRESS → PENDING_VERIFY → PENDING_APPROVAL → COMPLETED
+                               ↓                   ↓
+                           DISPUTED ←──────── DISPUTED
+                               ↓
+                         COMPLETED / REFUNDED
 ```
 
 ---
@@ -61,6 +101,9 @@ The AgentPact.sol contract needs these modifications before the MCP server is bu
 7. Add `approveWork(pactId)`: buyer only, moves `PENDING_APPROVAL` → `COMPLETED`, releases funds
 8. Add `rejectWork(pactId)`: buyer only, moves `PENDING_APPROVAL` → `DISPUTED`
 9. Add `autoApprove(pactId)`: anyone can call if `block.timestamp > verifiedAt + reviewPeriod`, releases funds
+10. Add `Amendment` struct and `mapping(uint256 => Amendment) public amendments` storage
+11. Add `proposeAmendment(pactId, newPayment, newDeadline, newSpecHash)`: only in NEGOTIATING, stores pending amendment with `proposedBy = msg.sender`, emits `AmendmentProposed` event
+12. Add `acceptAmendment(pactId)` (payable): only in NEGOTIATING, `msg.sender != amendment.proposedBy`, updates pact terms, handles deposit adjustments (refund excess or require additional ETH), clears amendment, emits `AmendmentAccepted` event
 
 ---
 
@@ -77,6 +120,7 @@ mcp-server/
     ├── contracts.ts        # Contract instances (AgentPact, OracleRegistry)
     ├── tools/
     │   ├── pact.ts         # Pact lifecycle tools (create-pact, accept-pact — both roles)
+    │   ├── negotiate.ts    # Negotiation tools (propose-amendment, accept-amendment)
     │   ├── work.ts         # Work tools (start-work, submit-work)
     │   ├── approval.ts     # Buyer approval tools (approve-work, reject-work, auto-approve)
     │   ├── oracle.ts       # Oracle tools (submit-verification, register-oracle)
@@ -168,6 +212,54 @@ Input schema:
 ```
 pactId: number — The pact ID
 ```
+
+---
+
+### Negotiation (tools/negotiate.ts)
+
+#### `propose-amendment`
+Propose modified terms for a pact in NEGOTIATING status. Creates an on-chain counter-offer.
+
+Input schema:
+```
+pactId: number          — The pact ID
+paymentEth: string      — New payment amount in ETH (e.g. "0.4"), or null to keep current
+deadline: number        — New deadline as Unix timestamp, or null to keep current
+specHash: string        — New spec IPFS hash, or null to keep current
+```
+
+Behavior:
+- Only callable when status is `NEGOTIATING`
+- Replaces any existing pending amendment
+- Does not require a deposit — just a proposal
+- Returns tx hash, proposed terms summary
+
+#### `accept-amendment`
+Accept the pending counter-offer on a pact. Updates the pact terms.
+
+Input schema:
+```
+pactId: number — The pact ID
+```
+
+Behavior:
+- Only callable by the party who did NOT propose the amendment
+- Updates the pact's payment, deadline, specHash to the amended values
+- If payment changed and caller is the creator with funds deposited:
+  - Payment increased → caller must send additional ETH with this call
+  - Payment decreased → excess ETH is refunded to caller
+- Pact stays in `NEGOTIATING` with updated terms (still needs `accept-pact` to fund and start)
+- Returns tx hash, updated terms, any deposit adjustment
+
+#### `get-amendment`
+Get the current pending amendment on a pact (read-only).
+
+Input schema:
+```
+pactId: number — The pact ID
+```
+
+Returns: proposed payment, deadline, specHash, proposedBy address, whether an amendment is pending.
 
 ---
 
@@ -389,20 +481,21 @@ Each tool wraps contract calls in try/catch and returns structured error message
 
 ## Implementation Order
 
-1. **Contract updates** — Update AgentPact.sol: add Initiator enum, PENDING_APPROVAL status, bidirectional createPact, approveWork/rejectWork/autoApprove functions. Update tests.
+1. **Contract updates** — Update AgentPact.sol: add Initiator enum, PENDING_APPROVAL status, bidirectional createPact, approveWork/rejectWork/autoApprove, proposeAmendment/acceptAmendment functions. Update tests.
 2. Scaffolding — package.json, tsconfig, directory structure
 3. config.ts + provider.ts — Environment loading, ethers setup
 4. contracts.ts — Typed contract instances
 5. Query tools — get-pact, get-verification, get-my-address, get-pact-count
 6. Pact lifecycle tools — create-pact (both roles), accept-pact, claim-timeout
-7. Work tools — start-work, submit-work
-8. Approval tools — approve-work, reject-work, auto-approve
-9. Oracle tools — register-oracle, submit-verification
-10. Dispute tools — raise-dispute, resolve-dispute
-11. Finalize tool — finalize-verification
-12. Resources — contract ABIs, config
-13. index.ts — Wire everything together, connect stdio transport
-14. Build and verify startup
+7. Negotiation tools — propose-amendment, accept-amendment, get-amendment
+8. Work tools — start-work, submit-work
+9. Approval tools — approve-work, reject-work, auto-approve
+10. Oracle tools — register-oracle, submit-verification
+11. Dispute tools — raise-dispute, resolve-dispute
+12. Finalize tool — finalize-verification
+13. Resources — contract ABIs, config
+14. index.ts — Wire everything together, connect stdio transport
+15. Build and verify startup
 
 ---
 
@@ -461,7 +554,46 @@ Buyer agent: "Flight is booked, approve."
 ← "Pact #7 approved. 0.11 ETH released to seller, 0.01 ETH stake returned to you."
 ```
 
-### Flow 3: Buyer doesn't respond (auto-approve)
+### Flow 3: On-chain negotiation (counter-offers)
+
+**Buyer creates a pact, seller negotiates:**
+```
+Buyer agent: "Create a pact for building an API integration. Pay 0.5 ETH, deadline in 7 days."
+→ calls create-pact(role: "buyer", paymentEth: "0.5", deadline: 1711324800, specHash: "QmBuyer...")
+← "Pact #10 created as BUYER. Deposited: 0.55 ETH. Open for sellers."
+```
+
+**Seller reviews, wants different terms:**
+```
+Seller agent: "Pact #10 looks interesting but 0.5 ETH is too low for API work and I need more time."
+→ calls get-pact(pactId: 10)
+← { payment: 0.5 ETH, deadline: "2026-03-25", specHash: "QmBuyer...", status: "NEGOTIATING" }
+
+→ calls propose-amendment(pactId: 10, paymentEth: "0.7", deadline: 1712534400, specHash: null)
+← "Amendment proposed for pact #10: payment 0.5→0.7 ETH, deadline extended by 14 days. Waiting for buyer."
+```
+
+**Buyer counter-proposes:**
+```
+Buyer agent: "0.7 is too much. I'll meet in the middle at 0.6 ETH but keep the original deadline."
+→ calls propose-amendment(pactId: 10, paymentEth: "0.6", deadline: null, specHash: null)
+← "Amendment proposed for pact #10: payment 0.5→0.6 ETH, deadline unchanged. Waiting for seller."
+```
+
+**Seller accepts the amendment:**
+```
+Seller agent: "0.6 ETH works for me."
+→ calls accept-amendment(pactId: 10)
+← "Amendment accepted. Pact #10 updated: payment now 0.6 ETH. Buyer sent additional 0.066 ETH to cover new price + stake."
+```
+
+**Now seller accepts the pact at the agreed terms:**
+```
+→ calls accept-pact(pactId: 10)
+← "Accepted pact #10 as SELLER. Staked 0.06 ETH. Work can begin."
+```
+
+### Flow 4: Buyer doesn't respond (auto-approve)
 
 ```
 [Oracle verification passes → PENDING_APPROVAL, verifiedAt = Jan 10]
