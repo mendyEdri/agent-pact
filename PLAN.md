@@ -863,3 +863,382 @@ Agent: "3 ETH exceeds my per-tx limit (0.5 ETH) and daily limit (2 ETH).
 → calls auto-approve(pactId: 5)
 ← "Review period expired. Pact #5 auto-approved. Payment released to seller."
 ```
+
+---
+
+## Phase 3 Roadmap: Trust Infrastructure
+
+Five features that take the system from "working escrow" to "autonomous agent economy." Each is independent and can be implemented in any order.
+
+### Feature 1: Discovery & Matching
+
+**Problem:** Agents can create and accept pacts, but have no way to find each other. There's no "list open pacts" or "find oracles with code-review capability."
+
+**What exists:**
+- Bidirectional pact creation (buyer posts request, seller posts listing)
+- `nextPactId` counter for iteration
+- Oracle capabilities stored in OracleRegistry
+- PactCreated/PactAccepted events emitted on-chain
+
+**Implementation:**
+
+**A. On-chain view functions (AgentPact.sol):**
+
+```solidity
+// Lightweight index: track open pacts per status
+mapping(uint8 => uint256[]) internal _pactsByStatus;
+
+// Called from createPact, acceptPact, etc. when status changes
+function _updateStatusIndex(uint256 pactId, Status oldStatus, Status newStatus) internal {
+    // Remove from old status list (swap-and-pop)
+    // Add to new status list
+}
+
+// Public query: get all pacts in NEGOTIATING status (open for acceptance)
+function getOpenPacts(uint256 offset, uint256 limit)
+    external view returns (uint256[] memory pactIds);
+
+// Get pacts created by a specific address
+function getPactsByAddress(address user, uint256 offset, uint256 limit)
+    external view returns (uint256[] memory pactIds);
+```
+
+**B. Oracle discovery (OracleRegistry.sol):**
+
+```solidity
+// Index oracles by capability
+mapping(string => address[]) internal _oraclesByCapability;
+
+function getOraclesByCapability(string calldata capability)
+    external view returns (address[] memory);
+```
+
+**C. MCP tools (new file: tools/discovery.ts):**
+
+| Tool | Description |
+|------|-------------|
+| `list-open-pacts` | List pacts in NEGOTIATING status, filterable by initiator (buyer/seller listings) |
+| `find-oracles` | Search oracles by capability (e.g. "code-review") |
+| `my-pacts` | List all pacts where the Safe is buyer or seller |
+
+**Files to modify:**
+- `contracts/AgentPact.sol` — add status index mappings, update status transitions, add view functions
+- `contracts/OracleRegistry.sol` — add capability index, query function
+- `mcp-server/src/tools/discovery.ts` — new file with 3 discovery tools
+- `mcp-server/src/tools/query.ts` — update get-pact-count to return open count
+- `mcp-server/src/abis.ts` — add new function signatures
+- `mcp-server/src/index.ts` — register discovery tools
+- `test/AgentPact.test.ts` — tests for status indexing and queries
+- `test/OracleRegistry.test.ts` — tests for capability search
+
+**Estimated scope:** ~200 lines Solidity, ~150 lines TypeScript, ~100 lines tests
+
+---
+
+### Feature 2: Agent Reputation System
+
+**Problem:** Agents are anonymous addresses. A buyer can't tell if a seller has completed 50 pacts or zero. No way to assess trustworthiness before committing funds.
+
+**What exists:**
+- Events: PactCompleted, DisputeResolved, WorkApproved, WorkRejected
+- OracleRegistry tracks `completedVerifications` and `challengeCount` per oracle
+- Nothing tracks buyer/seller completion or dispute history
+
+**Implementation:**
+
+**A. On-chain tracking (AgentPact.sol):**
+
+```solidity
+struct Reputation {
+    uint256 completedAsBuyer;     // Pacts completed where this address was buyer
+    uint256 completedAsSeller;    // Pacts completed where this address was seller
+    uint256 disputesLost;         // Disputes where this address lost
+    uint256 totalVolumeWei;       // Total ETH transacted
+}
+
+mapping(address => Reputation) public reputation;
+```
+
+Update `_releaseFunds()`: increment buyer/seller completion counts + volume.
+Update `resolveDispute()`: increment `disputesLost` for the losing party.
+Update `claimTimeout()`: increment `disputesLost` for the party at fault (seller if no delivery).
+
+**B. View function:**
+
+```solidity
+function getReputation(address user) external view returns (
+    uint256 completedAsBuyer,
+    uint256 completedAsSeller,
+    uint256 disputesLost,
+    uint256 totalVolumeWei
+);
+```
+
+**C. MCP tools:**
+
+| Tool | Description |
+|------|-------------|
+| `get-reputation` | Look up any address's pact history (completions, disputes, volume) |
+| `check-counterparty` | Before accepting a pact, check the other party's reputation |
+
+**Files to modify:**
+- `contracts/AgentPact.sol` — add Reputation struct/mapping, update _releaseFunds/resolveDispute/claimTimeout, add view function
+- `mcp-server/src/tools/query.ts` — add get-reputation and check-counterparty tools
+- `mcp-server/src/abis.ts` — add getReputation signature
+- `test/AgentPact.test.ts` — test reputation increments across lifecycle
+
+**Estimated scope:** ~60 lines Solidity, ~80 lines TypeScript, ~80 lines tests
+
+---
+
+### Feature 3: Multi-Agent Budget Coordination
+
+**Problem:** Multiple session keys can exist under one Safe, but their spending is tracked independently. Two agents could each spend up to the daily limit simultaneously, effectively doubling the intended budget. No global spending cap across all agents.
+
+**What exists:**
+- Per-session spending tracker with daily/weekly rolling windows
+- `sessionCount` tracking active sessions
+- Each session has independent maxPerTx/maxDaily/maxWeekly
+
+**Implementation:**
+
+**A. Global spending tracker (AgentPolicyModule.sol):**
+
+```solidity
+// Safe-wide limits (set by owner)
+uint256 public globalMaxDaily;
+uint256 public globalMaxWeekly;
+
+// Safe-wide spending tracker (shared across all sessions)
+SpendingTracker public globalSpending;
+
+function setGlobalLimits(uint256 maxDaily, uint256 maxWeekly) external onlyOwner;
+```
+
+**B. Update _validateTransaction:**
+
+After per-session checks pass, also check global limits:
+
+```solidity
+// Existing: per-session daily/weekly check
+// New: global daily/weekly check
+if (globalMaxDaily > 0) {
+    _resetIfNeeded(globalSpending);
+    require(globalSpending.dailySpent + value <= globalMaxDaily, "Exceeds global daily limit");
+}
+if (globalMaxWeekly > 0) {
+    require(globalSpending.weeklySpent + value <= globalMaxWeekly, "Exceeds global weekly limit");
+}
+globalSpending.dailySpent += value;
+globalSpending.weeklySpent += value;
+```
+
+**C. MCP wallet tool update:**
+
+Add global spending info to `get-spending` output:
+
+```json
+{
+  "session": { "dailySpent": "0.5 ETH", "dailyLimit": "2.0 ETH" },
+  "global":  { "dailySpent": "3.5 ETH", "dailyLimit": "5.0 ETH", "sessionsActive": 3 }
+}
+```
+
+**Files to modify:**
+- `contracts/AgentPolicyModule.sol` — add global limits + tracker, update _validateTransaction, add setGlobalLimits
+- `mcp-server/src/tools/wallet.ts` — update get-spending to show global stats
+- `mcp-server/src/abis.ts` — add setGlobalLimits, globalMaxDaily, globalMaxWeekly, globalSpending
+- `test/AgentPolicyModule.test.ts` — test global limit enforcement with multiple sessions
+
+**Estimated scope:** ~50 lines Solidity, ~30 lines TypeScript, ~80 lines tests
+
+---
+
+### Feature 4: Oracle Incentives & Fee Distribution
+
+**Problem:** Oracles stake to register but aren't paid for verification work. There's no incentive to actually submit scores — they only risk slashing for bad behavior.
+
+**What exists:**
+- Oracles register with stake in OracleRegistry
+- Pact creator selects oracles + weights at creation time
+- `_releaseFunds()` sends 100% of payment to seller (no oracle cut)
+- `slashOracle()` exists but is owner-only and disconnected from pact outcomes
+
+**Implementation:**
+
+**A. Oracle fee at pact creation (AgentPact.sol):**
+
+```solidity
+// In Pact struct:
+uint256 oracleFee;        // Total fee escrowed for oracles (set at creation)
+
+// In createPact:
+// Buyer deposits: payment + buyerStake + oracleFee
+// oracleFee is typically payment * ORACLE_FEE_BPS / 10000 (e.g. 2%)
+uint256 public constant ORACLE_FEE_BPS = 200; // 2%
+```
+
+**B. Fee distribution on completion:**
+
+```solidity
+function _releaseFunds(uint256 pactId) internal {
+    Pact storage p = pacts[pactId];
+
+    // Pay seller (payment + seller stake)
+    payable(p.seller).transfer(p.payment + p.sellerStake);
+
+    // Return buyer stake
+    payable(p.buyer).transfer(p.buyerStake);
+
+    // Distribute oracle fees proportional to weight
+    for (uint256 i = 0; i < p.oracles.length; i++) {
+        uint256 fee = p.oracleFee * p.oracleWeights[i] / 100;
+        payable(p.oracles[i]).transfer(fee);
+    }
+}
+```
+
+**C. Oracle reputation update:**
+
+After `finalizeVerification`, call `oracleRegistry.incrementVerifications()` for each oracle that submitted. This already exists but isn't called from AgentPact.
+
+**D. MCP tool updates:**
+
+- `create-pact`: show oracle fee in deposit breakdown
+- `get-pact`: show oracle fee amount
+- New tool `oracle-earnings`: query how much an oracle has earned across pacts
+
+**Files to modify:**
+- `contracts/AgentPact.sol` — add oracleFee to Pact struct, update createPact deposit calculation, update _releaseFunds to distribute fees, call incrementVerifications
+- `contracts/OracleRegistry.sol` — add earnings tracking (optional: `mapping(address => uint256) public totalEarned`)
+- `mcp-server/src/tools/pact.ts` — update deposit calculation to include oracle fee
+- `mcp-server/src/tools/oracle.ts` — add oracle-earnings tool
+- `mcp-server/src/abis.ts` — update ABI entries
+- `test/AgentPact.test.ts` — test fee calculation, distribution, edge cases (rounding, disputes)
+
+**Estimated scope:** ~80 lines Solidity, ~60 lines TypeScript, ~100 lines tests
+
+**Design decisions:**
+- Fee comes from buyer (on top of payment), not deducted from seller payment
+- Percentage is a contract constant (2%), not per-pact configurable (simpler)
+- On dispute, oracle fees are still distributed (oracles did their work regardless of outcome)
+- If verification fails threshold, oracles still get paid (they submitted honest scores)
+
+---
+
+### Feature 5: ERC-20 Token Support
+
+**Problem:** All payments are ETH-only. Can't use USDC, DAI, or any ERC-20 token. The `allowedTokens` field exists in the policy module but is never enforced.
+
+**What exists:**
+- `AgentPolicy.allowedTokens` array defined in AgentPolicyModule.sol (populated on grantSession, returned in getSession)
+- Never checked in _validateTransaction
+- AgentPact.sol is entirely ETH-based (all payable functions, all .transfer() calls)
+
+**Implementation:**
+
+**A. AgentPact.sol token support:**
+
+```solidity
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+
+// In Pact struct:
+address paymentToken;  // address(0) = native ETH, otherwise ERC20 address
+
+// In createPact:
+if (paymentToken == address(0)) {
+    require(msg.value == requiredDeposit, "Incorrect ETH deposit");
+} else {
+    require(msg.value == 0, "ETH not accepted for token pacts");
+    IERC20(paymentToken).safeTransferFrom(msg.sender, address(this), requiredDeposit);
+}
+
+// In _releaseFunds:
+if (p.paymentToken == address(0)) {
+    payable(p.seller).transfer(amount);
+} else {
+    IERC20(p.paymentToken).safeTransfer(p.seller, amount);
+}
+```
+
+**B. AgentPolicyModule.sol token enforcement:**
+
+```solidity
+// In _validateTransaction, after function selector check:
+// Detect if this is a token transfer by checking for ERC20.transfer/transferFrom selectors
+if (policy.allowedTokens.length > 0) {
+    bytes4 selector = bytes4(data[:4]);
+    // Check if calling approve/transfer/transferFrom on a token contract
+    if (_isTokenOperation(selector)) {
+        address token = to;  // The contract being called IS the token
+        bool tokenAllowed = false;
+        for (uint256 i = 0; i < policy.allowedTokens.length; i++) {
+            if (policy.allowedTokens[i] == token) {
+                tokenAllowed = true;
+                break;
+            }
+        }
+        require(tokenAllowed, "Token not allowed");
+    }
+}
+```
+
+**C. Spending tracking for tokens:**
+
+This is the hardest part. Options:
+1. **Simple:** Only track ETH spending in limits. Token limits enforced by allowlist only.
+2. **Per-token limits:** Add `mapping(address => SpendingTracker)` per token per session. Complex but thorough.
+3. **USD-equivalent:** Use a price oracle to convert token amounts to ETH-equivalent. Most accurate but adds oracle dependency.
+
+**Recommended: Option 1** (simple) for first pass. Token allowlist controls which tokens are usable. Spending limits only apply to ETH value in the transaction. Token amount limits can be added later.
+
+**D. MCP tool updates:**
+
+- `create-pact`: add optional `paymentToken` parameter (default: ETH)
+- `accept-pact`: handle token approval before accepting
+- `get-balance`: show ERC20 balances for allowed tokens
+- New tool `approve-token`: approve the AgentPact contract to spend tokens from the Safe
+
+**Files to modify:**
+- `contracts/AgentPact.sol` — add paymentToken to Pact, branch all deposit/release logic, import SafeERC20
+- `contracts/AgentPolicyModule.sol` — enforce allowedTokens in _validateTransaction
+- `mcp-server/src/tools/pact.ts` — add paymentToken parameter, handle token approval flow
+- `mcp-server/src/tools/wallet.ts` — show token balances
+- `mcp-server/src/abis.ts` — update ABIs
+- `test/AgentPact.test.ts` — deploy mock ERC20, test full lifecycle with tokens
+- `test/AgentPolicyModule.test.ts` — test token allowlist enforcement
+
+**Estimated scope:** ~150 lines Solidity, ~100 lines TypeScript, ~150 lines tests
+
+---
+
+### Implementation Priority Matrix
+
+```
+                    High Value
+                        │
+   ┌────────────────────┼────────────────────┐
+   │                    │                    │
+   │  2. Reputation     │  1. Discovery      │
+   │  (medium effort)   │  (medium effort)   │
+   │                    │                    │
+Low├────────────────────┼────────────────────┤ High
+Effort                  │                    Effort
+   │                    │                    │
+   │  3. Multi-Agent    │  4. Oracle Fees    │
+   │  (medium effort)   │  (high effort)     │
+   │                    │                    │
+   │                    │  5. ERC-20         │
+   │                    │  (high effort)     │
+   └────────────────────┼────────────────────┘
+                        │
+                    Low Value (for now)
+```
+
+**Recommended order:**
+1. **Discovery** — highest immediate value, agents can find each other
+2. **Reputation** — pairs with discovery, agents can assess counterparties
+3. **Multi-Agent Budgets** — safety feature, prevents budget overruns
+4. **Oracle Fees** — incentive alignment, makes oracles sustainable
+5. **ERC-20 Tokens** — broadens payment options, but complex and touches many files
