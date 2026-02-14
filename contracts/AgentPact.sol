@@ -63,6 +63,15 @@ contract AgentPact is ReentrancyGuard {
     mapping(uint256 => mapping(address => Verification)) public verifications;
     mapping(uint256 => Amendment) public amendments;
 
+    struct Reputation {
+        uint256 completedAsBuyer;
+        uint256 completedAsSeller;
+        uint256 disputesLost;
+        uint256 totalVolumeWei;
+    }
+
+    mapping(address => Reputation) public reputation;
+
     event PactCreated(
         uint256 indexed pactId,
         address indexed creator,
@@ -96,6 +105,13 @@ contract AgentPact is ReentrancyGuard {
         bytes32 specHash
     );
     event AmendmentAccepted(uint256 indexed pactId, address indexed acceptedBy);
+    event ReputationUpdated(
+        address indexed user,
+        uint256 completedAsBuyer,
+        uint256 completedAsSeller,
+        uint256 disputesLost,
+        uint256 totalVolumeWei
+    );
 
     modifier onlyBuyer(uint256 pactId) {
         require(msg.sender == pacts[pactId].buyer, "Not buyer");
@@ -442,9 +458,32 @@ contract AgentPact is ReentrancyGuard {
         emit PactCompleted(pactId);
     }
 
+    function _updateReputation(
+        address user,
+        bool completedBuyer,
+        bool completedSeller,
+        uint256 volume
+    ) internal {
+        Reputation storage r = reputation[user];
+        if (completedBuyer) r.completedAsBuyer++;
+        if (completedSeller) r.completedAsSeller++;
+        r.totalVolumeWei += volume;
+        emit ReputationUpdated(user, r.completedAsBuyer, r.completedAsSeller, r.disputesLost, r.totalVolumeWei);
+    }
+
+    function _penalizeReputation(address user) internal {
+        Reputation storage r = reputation[user];
+        r.disputesLost++;
+        emit ReputationUpdated(user, r.completedAsBuyer, r.completedAsSeller, r.disputesLost, r.totalVolumeWei);
+    }
+
     function _releaseFunds(uint256 pactId) internal {
         Pact storage pact = pacts[pactId];
         pact.status = Status.COMPLETED;
+
+        // Update reputation for both parties
+        _updateReputation(pact.buyer, true, false, pact.payment);
+        _updateReputation(pact.seller, false, true, pact.payment);
 
         // Seller gets payment + seller stake
         uint256 sellerPayout = pact.payment + pact.sellerStake;
@@ -493,12 +532,19 @@ contract AgentPact is ReentrancyGuard {
         if (sellerWins) {
             pact.status = Status.COMPLETED;
 
+            // Seller vindicated: gets completion credit; buyer penalized
+            _updateReputation(pact.seller, false, true, pact.payment);
+            _penalizeReputation(pact.buyer);
+
             uint256 sellerPayout = pact.payment + pact.sellerStake + pact.buyerStake;
 
             (bool sent, ) = pact.seller.call{value: sellerPayout}("");
             require(sent, "Failed to pay seller");
         } else {
             pact.status = Status.REFUNDED;
+
+            // Seller at fault: penalized
+            _penalizeReputation(pact.seller);
 
             uint256 buyerRefund = pact.payment + pact.buyerStake + pact.sellerStake;
 
@@ -540,6 +586,9 @@ contract AgentPact is ReentrancyGuard {
         ) {
             // Seller didn't deliver or verification stalled — refund buyer, forfeit seller stake
             pact.status = Status.REFUNDED;
+
+            // Seller at fault for timeout
+            _penalizeReputation(pact.seller);
 
             uint256 buyerRefund = pact.payment + pact.buyerStake + pact.sellerStake;
             (bool sent, ) = pact.buyer.call{value: buyerRefund}("");
@@ -601,5 +650,15 @@ contract AgentPact is ReentrancyGuard {
     ) {
         Verification storage v = verifications[pactId][oracle];
         return (v.score, v.hasSubmitted, v.proof);
+    }
+
+    function getReputation(address user) external view returns (
+        uint256 completedAsBuyer,
+        uint256 completedAsSeller,
+        uint256 disputesLost,
+        uint256 totalVolumeWei
+    ) {
+        Reputation storage r = reputation[user];
+        return (r.completedAsBuyer, r.completedAsSeller, r.disputesLost, r.totalVolumeWei);
     }
 }

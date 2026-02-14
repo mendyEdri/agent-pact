@@ -136,4 +136,90 @@ export function registerQueryTools(server: McpServer, config: Config) {
       }
     }
   );
+
+  server.tool(
+    "get-reputation",
+    "Look up an address's pact history — completions as buyer/seller, disputes lost, total volume",
+    { address: z.string().describe("The Ethereum address to check") },
+    async ({ address }) => {
+      try {
+        const contract = getAgentPact(config);
+        const r = await contract.getReputation(address);
+        const total = Number(r.completedAsBuyer) + Number(r.completedAsSeller);
+        const disputeRate = total > 0
+          ? ((Number(r.disputesLost) / total) * 100).toFixed(1) + "%"
+          : "N/A (no pacts)";
+
+        return {
+          content: [{
+            type: "text" as const,
+            text: JSON.stringify({
+              address,
+              completedAsBuyer: Number(r.completedAsBuyer),
+              completedAsSeller: Number(r.completedAsSeller),
+              totalCompleted: total,
+              disputesLost: Number(r.disputesLost),
+              disputeRate,
+              totalVolume: ethers.formatEther(r.totalVolumeWei) + " ETH",
+            }, null, 2),
+          }],
+        };
+      } catch (err: any) {
+        return { content: [{ type: "text" as const, text: `Error: ${err.reason ?? err.message}` }], isError: true };
+      }
+    }
+  );
+
+  server.tool(
+    "check-counterparty",
+    "Before accepting a pact, check the other party's reputation and get a risk assessment",
+    { pactId: z.number().int().nonnegative().describe("The pact ID to check the counterparty for") },
+    async ({ pactId }) => {
+      try {
+        const contract = getAgentPact(config);
+        const wallet = getSigner(config);
+        const p = await contract.getPact(pactId);
+
+        // Determine who the counterparty is
+        const myAddr = (config.safeAddress ?? wallet.address).toLowerCase();
+        let counterparty: string;
+        if (p.buyer.toLowerCase() === myAddr) {
+          counterparty = p.seller;
+        } else if (p.seller.toLowerCase() === myAddr) {
+          counterparty = p.buyer;
+        } else {
+          // We're neither party yet — check who initiated
+          counterparty = Number(p.initiator) === 0 ? p.buyer : p.seller;
+        }
+
+        const r = await contract.getReputation(counterparty);
+        const total = Number(r.completedAsBuyer) + Number(r.completedAsSeller);
+        const disputeRate = total > 0 ? Number(r.disputesLost) / total : 0;
+
+        let risk: string;
+        if (total === 0) risk = "UNKNOWN — no pact history";
+        else if (disputeRate > 0.3) risk = "HIGH — dispute rate above 30%";
+        else if (disputeRate > 0.1) risk = "MEDIUM — dispute rate above 10%";
+        else risk = "LOW — good track record";
+
+        return {
+          content: [{
+            type: "text" as const,
+            text: JSON.stringify({
+              counterparty,
+              completedAsBuyer: Number(r.completedAsBuyer),
+              completedAsSeller: Number(r.completedAsSeller),
+              totalCompleted: total,
+              disputesLost: Number(r.disputesLost),
+              disputeRate: (disputeRate * 100).toFixed(1) + "%",
+              totalVolume: ethers.formatEther(r.totalVolumeWei) + " ETH",
+              riskAssessment: risk,
+            }, null, 2),
+          }],
+        };
+      } catch (err: any) {
+        return { content: [{ type: "text" as const, text: `Error: ${err.reason ?? err.message}` }], isError: true };
+      }
+    }
+  );
 }

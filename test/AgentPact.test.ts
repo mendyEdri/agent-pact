@@ -1075,4 +1075,167 @@ describe("AgentPact", function () {
       expect(p.verifiedAt).to.equal(0); // not yet verified
     });
   });
+
+  // ──────────────────────────────────────────────
+  // Reputation
+  // ──────────────────────────────────────────────
+
+  describe("Reputation", function () {
+    // Helper: complete a full pact lifecycle (create → accept → work → verify → approve)
+    async function completePact(pactId: number = 0) {
+      await pact.connect(seller).startWork(pactId);
+      await pact.connect(seller).submitWork(pactId, PROOF_HASH);
+      await pact.connect(oracle1).submitVerification(pactId, 85, VERIFICATION_PROOF);
+      await pact.connect(other).finalizeVerification(pactId);
+      await pact.connect(buyer).approveWork(pactId);
+    }
+
+    it("should start at zero for all addresses", async function () {
+      const r = await pact.getReputation(buyer.address);
+      expect(r.completedAsBuyer).to.equal(0);
+      expect(r.completedAsSeller).to.equal(0);
+      expect(r.disputesLost).to.equal(0);
+      expect(r.totalVolumeWei).to.equal(0);
+    });
+
+    it("should increment buyer and seller on approveWork", async function () {
+      await createAndAcceptPact();
+      await completePact(0);
+
+      const buyerRep = await pact.getReputation(buyer.address);
+      expect(buyerRep.completedAsBuyer).to.equal(1);
+      expect(buyerRep.completedAsSeller).to.equal(0);
+      expect(buyerRep.disputesLost).to.equal(0);
+      expect(buyerRep.totalVolumeWei).to.equal(PAYMENT);
+
+      const sellerRep = await pact.getReputation(seller.address);
+      expect(sellerRep.completedAsBuyer).to.equal(0);
+      expect(sellerRep.completedAsSeller).to.equal(1);
+      expect(sellerRep.disputesLost).to.equal(0);
+      expect(sellerRep.totalVolumeWei).to.equal(PAYMENT);
+    });
+
+    it("should increment on autoApprove", async function () {
+      await flowToPendingApproval();
+      await time.increase(REVIEW_PERIOD + 1);
+      await pact.connect(other).autoApprove(0);
+
+      const buyerRep = await pact.getReputation(buyer.address);
+      expect(buyerRep.completedAsBuyer).to.equal(1);
+
+      const sellerRep = await pact.getReputation(seller.address);
+      expect(sellerRep.completedAsSeller).to.equal(1);
+    });
+
+    it("should track disputesLost for buyer when seller wins", async function () {
+      await createAndAcceptPact();
+      await pact.connect(seller).startWork(0);
+      await pact.connect(buyer).raiseDispute(0, arbitrator.address);
+      await pact.connect(arbitrator).resolveDispute(0, true);
+
+      const buyerRep = await pact.getReputation(buyer.address);
+      expect(buyerRep.disputesLost).to.equal(1);
+      expect(buyerRep.completedAsBuyer).to.equal(0);
+
+      // Seller wins: gets completion credit
+      const sellerRep = await pact.getReputation(seller.address);
+      expect(sellerRep.completedAsSeller).to.equal(1);
+      expect(sellerRep.disputesLost).to.equal(0);
+      expect(sellerRep.totalVolumeWei).to.equal(PAYMENT);
+    });
+
+    it("should track disputesLost for seller when buyer wins", async function () {
+      await createAndAcceptPact();
+      await pact.connect(seller).startWork(0);
+      await pact.connect(buyer).raiseDispute(0, arbitrator.address);
+      await pact.connect(arbitrator).resolveDispute(0, false);
+
+      const sellerRep = await pact.getReputation(seller.address);
+      expect(sellerRep.disputesLost).to.equal(1);
+      expect(sellerRep.completedAsSeller).to.equal(0);
+
+      // Buyer doesn't get completion credit on refund
+      const buyerRep = await pact.getReputation(buyer.address);
+      expect(buyerRep.completedAsBuyer).to.equal(0);
+      expect(buyerRep.disputesLost).to.equal(0);
+    });
+
+    it("should penalize seller on delivery timeout", async function () {
+      await createAndAcceptPact();
+      await pact.connect(seller).startWork(0);
+      await time.increaseTo(deadline + 1);
+      await pact.connect(other).claimTimeout(0);
+
+      const sellerRep = await pact.getReputation(seller.address);
+      expect(sellerRep.disputesLost).to.equal(1);
+      expect(sellerRep.completedAsSeller).to.equal(0);
+    });
+
+    it("should not penalize anyone on NEGOTIATING timeout", async function () {
+      await createBuyerPact();
+      await time.increaseTo(deadline + 1);
+      await pact.connect(other).claimTimeout(0);
+
+      const buyerRep = await pact.getReputation(buyer.address);
+      expect(buyerRep.disputesLost).to.equal(0);
+      expect(buyerRep.completedAsBuyer).to.equal(0);
+    });
+
+    it("should accumulate across multiple pacts", async function () {
+      // Pact 0
+      await createBuyerPact();
+      await pact.connect(seller).acceptPact(0, { value: SELLER_STAKE });
+      await completePact(0);
+
+      // Pact 1
+      deadline = (await time.latest()) + 86400;
+      await pact
+        .connect(buyer)
+        .createPact(INITIATOR_BUYER, SPEC_HASH, deadline, [oracle1.address], [100], 70, PAYMENT, REVIEW_PERIOD, {
+          value: BUYER_DEPOSIT,
+        });
+      await pact.connect(seller).acceptPact(1, { value: SELLER_STAKE });
+      await pact.connect(seller).startWork(1);
+      await pact.connect(seller).submitWork(1, PROOF_HASH);
+      await pact.connect(oracle1).submitVerification(1, 85, VERIFICATION_PROOF);
+      await pact.connect(other).finalizeVerification(1);
+      await pact.connect(buyer).approveWork(1);
+
+      // Pact 2
+      deadline = (await time.latest()) + 86400;
+      await pact
+        .connect(buyer)
+        .createPact(INITIATOR_BUYER, SPEC_HASH, deadline, [oracle1.address], [100], 70, PAYMENT, REVIEW_PERIOD, {
+          value: BUYER_DEPOSIT,
+        });
+      await pact.connect(seller).acceptPact(2, { value: SELLER_STAKE });
+      await pact.connect(seller).startWork(2);
+      await pact.connect(seller).submitWork(2, PROOF_HASH);
+      await pact.connect(oracle1).submitVerification(2, 85, VERIFICATION_PROOF);
+      await pact.connect(other).finalizeVerification(2);
+      await pact.connect(buyer).approveWork(2);
+
+      const buyerRep = await pact.getReputation(buyer.address);
+      expect(buyerRep.completedAsBuyer).to.equal(3);
+      expect(buyerRep.totalVolumeWei).to.equal(PAYMENT * 3n);
+
+      const sellerRep = await pact.getReputation(seller.address);
+      expect(sellerRep.completedAsSeller).to.equal(3);
+      expect(sellerRep.totalVolumeWei).to.equal(PAYMENT * 3n);
+    });
+
+    it("should emit ReputationUpdated events on completion", async function () {
+      await createAndAcceptPact();
+      await pact.connect(seller).startWork(0);
+      await pact.connect(seller).submitWork(0, PROOF_HASH);
+      await pact.connect(oracle1).submitVerification(0, 85, VERIFICATION_PROOF);
+      await pact.connect(other).finalizeVerification(0);
+
+      await expect(pact.connect(buyer).approveWork(0))
+        .to.emit(pact, "ReputationUpdated")
+        .withArgs(buyer.address, 1, 0, 0, PAYMENT)
+        .to.emit(pact, "ReputationUpdated")
+        .withArgs(seller.address, 0, 1, 0, PAYMENT);
+    });
+  });
 });
