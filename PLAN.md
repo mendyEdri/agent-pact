@@ -69,6 +69,154 @@ struct Amendment {
 
 **Gas consideration:** Each counter-offer costs ~50k gas (~$0.01 on Base L2). Reasonable for a negotiation that typically takes 1-3 rounds. On L1 Ethereum it would cost more — agents should negotiate off-chain on L1.
 
+### Agent Wallet Architecture
+
+Agents need wallets they can use autonomously, but with guardrails. A raw private key with unlimited access is dangerous — if the agent hallucinates, gets prompt-injected, or bugs out, it could drain the wallet. The wallet layer sits **beneath** AgentPact and controls what any agent can do with money.
+
+#### Design: Smart Contract Wallet + Session Keys (ERC-4337)
+
+Each agent operates through a **smart contract wallet** (not a raw EOA). The human owner controls the wallet; the agent gets a **session key** — a temporary, scoped private key that can only perform specific actions within specific limits.
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                    Human Owner (EOA)                     │
+│               Master key, full control                   │
+└──────────────────────┬──────────────────────────────────┘
+                       │ owns
+┌──────────────────────▼──────────────────────────────────┐
+│              Smart Contract Wallet (ERC-4337)            │
+│                                                          │
+│  On-chain policy module:                                 │
+│  ├── Spending limits (per-tx, daily, weekly)             │
+│  ├── Contract allowlist (AgentPact, OracleRegistry, ...) │
+│  ├── Function-level ACL (can call X but not Y)           │
+│  ├── Human approval threshold (>$100 → require co-sign) │
+│  └── Token allowlist (ETH, USDC only — no random tokens) │
+│                                                          │
+│  Session key slots:                                      │
+│  ├── Agent A: key=0xabc..., expires=24h, role=buyer      │
+│  ├── Agent B: key=0xdef..., expires=7d, role=seller      │
+│  └── Agent C: key=0x789..., expires=1h, role=oracle      │
+└─────────────────────────────────────────────────────────┘
+```
+
+**Session keys** are the core concept: instead of giving the agent the master private key, the owner creates a temporary key that:
+- Expires after a set time (1 hour, 24 hours, 7 days)
+- Can only call specific contracts and functions
+- Has a spending ceiling
+- Can be revoked instantly by the owner
+
+If an agent goes rogue, damage is capped. The owner revokes the session key and the agent can't spend another wei.
+
+#### Permission Model
+
+Permissions are defined as a **policy** attached to each session key:
+
+```solidity
+struct AgentPolicy {
+    uint256 maxPerTx;          // Max spend per transaction (e.g., 0.5 ETH)
+    uint256 maxDaily;          // Max cumulative spend per 24h (e.g., 2 ETH)
+    uint256 maxWeekly;         // Max cumulative spend per 7d (e.g., 5 ETH)
+    uint256 humanApprovalAbove; // Require owner co-signature above this amount
+    address[] allowedContracts; // Contracts this agent can interact with
+    bytes4[] allowedFunctions;  // Function selectors (e.g., createPact, acceptPact)
+    address[] allowedTokens;    // ERC-20 tokens the agent can spend (empty = ETH only)
+    uint256 expiresAt;         // Session key expiry timestamp
+}
+```
+
+**Example policies:**
+
+| Agent Role | Max/tx | Daily | Contracts | Functions | Approval threshold |
+|-----------|--------|-------|-----------|-----------|-------------------|
+| Buyer agent | 0.5 ETH | 2 ETH | AgentPact | createPact, acceptPact, approveWork, proposeAmendment, acceptAmendment | > 1 ETH |
+| Seller agent | 0.1 ETH | 0.5 ETH | AgentPact | acceptPact, startWork, submitWork, proposeAmendment, acceptAmendment | > 0.2 ETH |
+| Oracle agent | 0.01 ETH | 0.05 ETH | AgentPact, OracleRegistry | submitVerification, registerOracle | > 0.05 ETH |
+
+#### Wallet Foundation: Safe + Module
+
+We use **Safe** (formerly Gnosis Safe) as the base wallet — it's the most battle-tested smart contract wallet (~$100B secured). On top of it, we deploy a custom **Safe Module** that enforces the agent policy:
+
+```
+Safe Wallet (holds funds)
+  └── AgentPolicyModule (our custom code)
+        ├── validateSessionKey(key, tx) → checks policy
+        ├── grantSession(key, policy) → owner creates session
+        ├── revokeSession(key) → owner kills session
+        └── getSpending(key) → current spend stats
+```
+
+The module is a single Solidity contract (~200 lines) that:
+1. Stores session keys and their policies
+2. Intercepts every transaction from a session key
+3. Checks: is this contract allowed? Is this function allowed? Is the amount within limits?
+4. Tracks cumulative spend per rolling time window
+5. Rejects transactions that violate any rule
+
+#### Web2 Bridge: Buying on the Traditional Internet
+
+For agents to buy on websites (flights, domains, APIs, SaaS), they need traditional payment methods. The architecture:
+
+```
+Agent (MCP server)
+    │
+    ├── On-chain: Smart contract wallet → pacts, DeFi, crypto payments
+    │
+    └── Off-chain: Virtual card API → traditional web purchases
+          │
+          ├── Stripe Issuing / Marqeta / Lithic
+          │     ├── Create virtual Visa per agent
+          │     ├── Set spend limit ($50/day)
+          │     ├── Restrict merchant categories (MCC codes)
+          │     └── Real-time transaction webhooks
+          │
+          └── Agent uses card via:
+                ├── Direct API (Stripe, Amazon, etc.)
+                └── Browser automation (Playwright) for sites without APIs
+```
+
+**How it works:**
+
+1. **Card creation**: The MCP server calls Stripe Issuing API to create a virtual Visa card for the agent. The card has programmatic spending limits and merchant category restrictions.
+2. **Agent pays**: When the agent needs to buy something online:
+   - If the service has an API (Stripe checkout, Amazon Product API) → agent calls the API directly with the card
+   - If no API exists → agent uses browser automation (Playwright) to navigate the site and checkout with the virtual card
+3. **Tracking**: Every charge triggers a webhook. The MCP server logs all spending and can freeze the card instantly if limits are exceeded.
+4. **Funding**: The virtual card draws from a pre-funded balance (topped up via bank transfer or crypto off-ramp). The human sets the max balance.
+
+**Merchant category restrictions** (MCC codes) add another layer:
+- Allow: airlines, software, cloud hosting, domain registrars
+- Block: gambling, cash advances, wire transfers, crypto exchanges (prevent circular flows)
+
+#### ERC-20 / Stablecoin Support
+
+The wallet natively supports paying in stablecoins (USDC, DAI) through the policy module:
+
+- `allowedTokens` in the policy controls which ERC-20s the agent can spend
+- The MCP server handles the `approve` + `transferFrom` two-step automatically — from the agent's perspective, it's a single `create-pact` call
+- The AgentPact contract can be extended to accept ERC-20 by adding a `token` field (address(0) = native ETH, otherwise = ERC-20 address)
+- For v1: ETH only. For v2: add a `token` parameter to `create-pact` and the contract
+
+#### Wallet Implementation Phases
+
+**Phase 1 (build with MCP server):**
+- Deploy Safe wallet for each agent owner
+- Build AgentPolicyModule (Solidity) with session keys + spending limits
+- MCP server signs transactions with session key instead of raw private key
+- Add wallet MCP tools (get-balance, get-spending, get-policy)
+- Software-level pre-tx policy check in the MCP server as a defense-in-depth layer
+
+**Phase 2 (after core pact flow works):**
+- Virtual card integration (Stripe Issuing)
+- Browser automation toolkit for web purchases
+- ERC-20 support in AgentPact contract
+- Multi-agent wallet management (one Safe, multiple session keys)
+
+**Phase 3 (future):**
+- Cross-chain support (bridge funds between chains)
+- Crypto-to-card bridge (Gnosis Pay — spend on-chain balance via Visa)
+- Automated top-up (when balance drops below threshold, swap or bridge)
+
 ### Updated State Machine
 
 ```
@@ -105,6 +253,39 @@ The AgentPact.sol contract needs these modifications before the MCP server is bu
 11. Add `proposeAmendment(pactId, newPayment, newDeadline, newSpecHash)`: only in NEGOTIATING, stores pending amendment with `proposedBy = msg.sender`, emits `AmendmentProposed` event
 12. Add `acceptAmendment(pactId)` (payable): only in NEGOTIATING, `msg.sender != amendment.proposedBy`, updates pact terms, handles deposit adjustments (refund excess or require additional ETH), clears amendment, emits `AmendmentAccepted` event
 
+### New Contract: AgentPolicyModule.sol
+
+A Safe Module (~200 lines) that enforces agent spending policies on-chain:
+
+1. `grantSession(address key, AgentPolicy policy)` — owner only, creates a session key with spending rules
+2. `revokeSession(address key)` — owner only, instantly kills a session key
+3. `validateTransaction(address key, address to, uint256 value, bytes data)` — called before every tx:
+   - Checks session key hasn't expired
+   - Checks `to` is in `allowedContracts`
+   - Checks function selector (first 4 bytes of `data`) is in `allowedFunctions`
+   - Checks `value` <= `maxPerTx`
+   - Checks cumulative daily spend <= `maxDaily`
+   - Checks cumulative weekly spend <= `maxWeekly`
+   - If `value` > `humanApprovalAbove`, requires owner co-signature
+   - Tracks spend in rolling time windows
+4. `getSession(address key)` — returns policy + current spending stats
+5. `getSpending(address key)` — returns daily/weekly cumulative totals
+
+Storage:
+```solidity
+mapping(address => AgentPolicy) public sessions;      // key → policy
+mapping(address => SpendingTracker) public spending;   // key → rolling totals
+
+struct SpendingTracker {
+    uint256 dailySpent;
+    uint256 weeklySpent;
+    uint256 lastDayReset;    // timestamp of last daily reset
+    uint256 lastWeekReset;   // timestamp of last weekly reset
+}
+```
+
+Events: `SessionGranted`, `SessionRevoked`, `TransactionValidated`, `TransactionRejected`, `SpendingLimitHit`
+
 ---
 
 ## Package Structure
@@ -116,8 +297,11 @@ mcp-server/
 └── src/
     ├── index.ts            # Entry point: create server, connect stdio transport
     ├── config.ts           # Chain config, contract addresses, env loading
-    ├── provider.ts         # Ethers provider + signer setup
-    ├── contracts.ts        # Contract instances (AgentPact, OracleRegistry)
+    ├── provider.ts         # Ethers provider + signer setup (session key signer)
+    ├── contracts.ts        # Contract instances (AgentPact, OracleRegistry, Safe)
+    ├── wallet/
+    │   ├── policy.ts       # Pre-tx policy check (defense-in-depth, mirrors on-chain rules)
+    │   └── spending.ts     # Spending tracker (cumulative daily/weekly totals)
     ├── tools/
     │   ├── pact.ts         # Pact lifecycle tools (create-pact, accept-pact — both roles)
     │   ├── negotiate.ts    # Negotiation tools (propose-amendment, accept-amendment)
@@ -126,9 +310,13 @@ mcp-server/
     │   ├── oracle.ts       # Oracle tools (submit-verification, register-oracle)
     │   ├── dispute.ts      # Dispute tools (raise-dispute, resolve-dispute)
     │   ├── query.ts        # Read-only tools (get-pact, list-pacts, get-verification)
+    │   ├── wallet.ts       # Wallet tools (get-balance, get-spending, get-policy)
     │   └── finalize.ts     # Finalization tools (finalize-verification)
     └── resources/
         └── contracts.ts    # MCP resources: ABI, addresses, chain info
+
+contracts/
+└── AgentPolicyModule.sol   # Safe module: session keys + spending limits (new contract)
 ```
 
 ---
@@ -154,11 +342,15 @@ Loaded from environment variables:
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `PRIVATE_KEY` | Wallet private key for signing txs | required |
+| `SESSION_KEY` | Agent session key (scoped, temporary) for signing txs | required |
+| `SAFE_ADDRESS` | Safe smart contract wallet address | required |
 | `RPC_URL` | JSON-RPC endpoint | `https://sepolia.base.org` |
 | `AGENT_PACT_ADDRESS` | Deployed AgentPact contract address | required |
 | `ORACLE_REGISTRY_ADDRESS` | Deployed OracleRegistry contract address | required |
+| `POLICY_MODULE_ADDRESS` | AgentPolicyModule contract address | required |
 | `CHAIN_ID` | Chain ID | `84532` (Base Sepolia) |
+| `MAX_PER_TX_ETH` | Software spending limit per tx (defense-in-depth) | `0.5` |
+| `MAX_DAILY_ETH` | Software daily spending limit | `2.0` |
 
 ---
 
@@ -400,6 +592,40 @@ Returns the total number of pacts created. No inputs.
 
 ---
 
+### Wallet Tools (tools/wallet.ts) — Read-only
+
+#### `get-balance`
+Get the wallet's current balance (ETH and any allowed ERC-20 tokens).
+
+Input schema:
+```
+(no inputs)
+```
+
+Returns: ETH balance, USDC balance (if applicable), Safe wallet address, session key address.
+
+#### `get-spending`
+Get the agent's spending stats against its policy limits.
+
+Input schema:
+```
+(no inputs)
+```
+
+Returns: spent today, daily limit, spent this week, weekly limit, remaining per-tx allowance, session key expiry time.
+
+#### `get-policy`
+Get the full policy attached to this agent's session key.
+
+Input schema:
+```
+(no inputs)
+```
+
+Returns: maxPerTx, maxDaily, maxWeekly, humanApprovalAbove, allowed contracts (with names), allowed functions (with names), allowed tokens, session expiry.
+
+---
+
 ### Finalization (tools/finalize.ts)
 
 #### `finalize-verification`
@@ -428,8 +654,9 @@ Returns the OracleRegistry ABI as JSON.
 ## Provider Setup (provider.ts)
 
 - Uses `ethers.JsonRpcProvider` with configured RPC URL
-- Creates `ethers.Wallet` from PRIVATE_KEY, connected to provider
-- Exposes helper to get balance formatted in ETH
+- Creates `ethers.Wallet` from SESSION_KEY (not master key), connected to provider
+- All transactions are routed through the Safe wallet via the AgentPolicyModule — the session key signs a UserOperation, the module validates it against the policy, and the Safe executes it
+- Exposes helpers: get balance (ETH + tokens), check session key validity, estimate gas
 
 ---
 
@@ -437,6 +664,8 @@ Returns the OracleRegistry ABI as JSON.
 
 - Uses `AgentPact__factory.connect(address, signer)` from typechain
 - Uses `OracleRegistry__factory.connect(address, signer)` from typechain
+- Uses `AgentPolicyModule__factory.connect(address, signer)` for wallet policy reads
+- Safe SDK for routing transactions through the smart contract wallet
 - Lazy initialization (connect on first use)
 
 ---
@@ -481,21 +710,24 @@ Each tool wraps contract calls in try/catch and returns structured error message
 
 ## Implementation Order
 
-1. **Contract updates** — Update AgentPact.sol: add Initiator enum, PENDING_APPROVAL status, bidirectional createPact, approveWork/rejectWork/autoApprove, proposeAmendment/acceptAmendment functions. Update tests.
-2. Scaffolding — package.json, tsconfig, directory structure
-3. config.ts + provider.ts — Environment loading, ethers setup
-4. contracts.ts — Typed contract instances
-5. Query tools — get-pact, get-verification, get-my-address, get-pact-count
-6. Pact lifecycle tools — create-pact (both roles), accept-pact, claim-timeout
-7. Negotiation tools — propose-amendment, accept-amendment, get-amendment
-8. Work tools — start-work, submit-work
-9. Approval tools — approve-work, reject-work, auto-approve
-10. Oracle tools — register-oracle, submit-verification
-11. Dispute tools — raise-dispute, resolve-dispute
-12. Finalize tool — finalize-verification
-13. Resources — contract ABIs, config
-14. index.ts — Wire everything together, connect stdio transport
-15. Build and verify startup
+1. **AgentPact contract updates** — Add Initiator enum, PENDING_APPROVAL status, bidirectional createPact, approveWork/rejectWork/autoApprove, proposeAmendment/acceptAmendment. Update tests.
+2. **AgentPolicyModule contract** — Build Safe module: session keys, spending policies, validation logic. Deploy alongside Safe wallet. Write tests.
+3. Scaffolding — package.json, tsconfig, directory structure
+4. config.ts + provider.ts — Environment loading, session key signer, Safe transaction routing
+5. wallet/policy.ts + wallet/spending.ts — Software-level pre-tx policy check + spending tracker
+6. contracts.ts — Typed contract instances (AgentPact, OracleRegistry, AgentPolicyModule, Safe)
+7. Wallet tools — get-balance, get-spending, get-policy
+8. Query tools — get-pact, get-verification, get-my-address, get-pact-count
+9. Pact lifecycle tools — create-pact (both roles), accept-pact, claim-timeout
+10. Negotiation tools — propose-amendment, accept-amendment, get-amendment
+11. Work tools — start-work, submit-work
+12. Approval tools — approve-work, reject-work, auto-approve
+13. Oracle tools — register-oracle, submit-verification
+14. Dispute tools — raise-dispute, resolve-dispute
+15. Finalize tool — finalize-verification
+16. Resources — contract ABIs, config
+17. index.ts — Wire everything together, connect stdio transport
+18. Build and verify startup
 
 ---
 
@@ -593,7 +825,35 @@ Seller agent: "0.6 ETH works for me."
 ← "Accepted pact #10 as SELLER. Staked 0.06 ETH. Work can begin."
 ```
 
-### Flow 4: Buyer doesn't respond (auto-approve)
+### Flow 4: Wallet spending limits in action
+
+**Agent checks its budget before creating a pact:**
+```
+Agent: "I want to hire someone for 3 ETH to build a full dApp."
+→ calls get-policy()
+← { maxPerTx: 0.5 ETH, maxDaily: 2 ETH, humanApprovalAbove: 1 ETH, session expires: 23h }
+
+→ calls get-spending()
+← { spentToday: 0.3 ETH, dailyLimit: 2 ETH, remaining: 1.7 ETH }
+
+Agent: "3 ETH exceeds my per-tx limit (0.5 ETH) and daily limit (2 ETH).
+        I'll need to ask the owner to approve this, or break it into smaller pacts."
+```
+
+**Agent hits spending limit mid-session:**
+```
+→ calls create-pact(role: "buyer", paymentEth: "0.6", ...)
+← ERROR: "Transaction blocked by wallet policy: 0.66 ETH (payment + stake) exceeds
+   per-transaction limit of 0.5 ETH. Request owner approval or reduce amount."
+```
+
+**Agent operates within limits, no friction:**
+```
+→ calls create-pact(role: "buyer", paymentEth: "0.3", ...)
+← "Pact #15 created. Deposited 0.33 ETH via Safe wallet. Daily spend: 0.63/2.0 ETH."
+```
+
+### Flow 5: Buyer doesn't respond (auto-approve)
 
 ```
 [Oracle verification passes → PENDING_APPROVAL, verifiedAt = Jan 10]
