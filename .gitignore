@@ -1,0 +1,10 @@
+node_modules
+.env
+coverage
+coverage.json
+typechain-types
+artifacts
+cache
+
+# Hardhat Ignition
+ignition/deployments
