@@ -49,7 +49,7 @@ async function main() {
   registerOracleTools(server, config, executor);
   registerDisputeTools(server, config, executor);
   registerFinalizeTools(server, config, executor);
-  registerWalletTools(server, config, policy, tracker);
+  registerWalletTools(server, config, policy, tracker, executor);
   registerDiscoveryTools(server, config);
 
   // Register resources

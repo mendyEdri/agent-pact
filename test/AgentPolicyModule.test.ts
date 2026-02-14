@@ -529,4 +529,322 @@ describe("AgentPolicyModule", function () {
       expect(await module.isSessionActive(agent.address)).to.be.false;
     });
   });
+
+  // ──────────────────────────────────────────────
+  // Shared Budget
+  // ──────────────────────────────────────────────
+
+  describe("Shared Budget", function () {
+    const SHARED_DAILY = ethers.parseEther("3.0");
+    const SHARED_WEEKLY = ethers.parseEther("10.0");
+
+    it("should allow owner to set shared budget", async function () {
+      await expect(module.setSharedBudget(SHARED_DAILY, SHARED_WEEKLY))
+        .to.emit(module, "SharedBudgetSet")
+        .withArgs(SHARED_DAILY, SHARED_WEEKLY);
+
+      const b = await module.getSharedBudget();
+      expect(b.enabled).to.be.true;
+      expect(b.maxDaily).to.equal(SHARED_DAILY);
+      expect(b.maxWeekly).to.equal(SHARED_WEEKLY);
+    });
+
+    it("should reject non-owner setting shared budget", async function () {
+      await expect(
+        module.connect(other).setSharedBudget(SHARED_DAILY, SHARED_WEEKLY)
+      ).to.be.revertedWithCustomError(module, "OwnableUnauthorizedAccount");
+    });
+
+    it("should reject zero daily limit", async function () {
+      await expect(
+        module.setSharedBudget(0, SHARED_WEEKLY)
+      ).to.be.revertedWith("maxDaily must be > 0");
+    });
+
+    it("should reject maxWeekly < maxDaily", async function () {
+      await expect(
+        module.setSharedBudget(SHARED_DAILY, SHARED_DAILY - 1n)
+      ).to.be.revertedWith("maxWeekly must be >= maxDaily");
+    });
+
+    it("should allow owner to disable shared budget", async function () {
+      await module.setSharedBudget(SHARED_DAILY, SHARED_WEEKLY);
+      await expect(module.disableSharedBudget())
+        .to.emit(module, "SharedBudgetSet")
+        .withArgs(0, 0);
+
+      const b = await module.getSharedBudget();
+      expect(b.enabled).to.be.false;
+    });
+
+    it("should reject disabling when not enabled", async function () {
+      await expect(module.disableSharedBudget())
+        .to.be.revertedWith("Shared budget not enabled");
+    });
+
+    it("should enforce shared daily limit across multiple agents", async function () {
+      // Set shared budget to 3 ETH/day
+      await module.setSharedBudget(SHARED_DAILY, SHARED_WEEKLY);
+
+      // Grant sessions to two agents with 2 ETH daily each
+      await module.grantSession(
+        agent.address, MAX_PER_TX, MAX_DAILY, MAX_WEEKLY, HUMAN_APPROVAL_ABOVE,
+        [targetContract.address], [SELECTOR_CREATE_PACT, SELECTOR_ACCEPT_PACT], [], expiresAt
+      );
+      await module.grantSession(
+        other.address, MAX_PER_TX, MAX_DAILY, MAX_WEEKLY, HUMAN_APPROVAL_ABOVE,
+        [targetContract.address], [SELECTOR_CREATE_PACT, SELECTOR_ACCEPT_PACT], [], expiresAt
+      );
+
+      const calldata = SELECTOR_CREATE_PACT + "0".repeat(56);
+      const txAmount = ethers.parseEther("0.5");
+
+      // Agent spends 2.0 ETH (4 txs) — within individual daily (2.0) and shared daily (3.0)
+      for (let i = 0; i < 4; i++) {
+        await module.validateTransaction(agent.address, targetContract.address, txAmount, calldata);
+      }
+
+      // Other agent tries 0.5 ETH — shared daily now at 2.5, still ok
+      await module.validateTransaction(other.address, targetContract.address, txAmount, calldata);
+
+      // Other agent tries another 0.5 — shared daily would be 3.0, ok
+      await module.validateTransaction(other.address, targetContract.address, txAmount, calldata);
+
+      // Other agent tries another 0.5 — shared daily would be 3.5 > 3.0
+      await expect(
+        module.validateTransaction(other.address, targetContract.address, txAmount, calldata)
+      ).to.be.revertedWith("Exceeds shared daily limit");
+    });
+
+    it("should enforce shared weekly limit across agents", async function () {
+      const longExpiry = (await time.latest()) + 30 * 86400;
+      // Set tight weekly budget: 2 ETH/day, 3 ETH/week
+      await module.setSharedBudget(ethers.parseEther("2.0"), ethers.parseEther("3.0"));
+
+      await module.grantSession(
+        agent.address, MAX_PER_TX, MAX_DAILY, MAX_WEEKLY, 0,
+        [targetContract.address], [SELECTOR_CREATE_PACT], [], longExpiry
+      );
+      await module.grantSession(
+        other.address, MAX_PER_TX, MAX_DAILY, MAX_WEEKLY, 0,
+        [targetContract.address], [SELECTOR_CREATE_PACT], [], longExpiry
+      );
+
+      const calldata = SELECTOR_CREATE_PACT + "0".repeat(56);
+      const txAmount = ethers.parseEther("0.5");
+
+      // Day 1: agent spends 2 ETH (shared daily max)
+      for (let i = 0; i < 4; i++) {
+        await module.validateTransaction(agent.address, targetContract.address, txAmount, calldata);
+      }
+
+      // Day 2: other agent spends 1 ETH (shared weekly now at 3.0)
+      await time.increase(86401);
+      await module.validateTransaction(other.address, targetContract.address, txAmount, calldata);
+      await module.validateTransaction(other.address, targetContract.address, txAmount, calldata);
+
+      // Day 2: other tries 0.5 more — shared weekly would be 3.5 > 3.0
+      await expect(
+        module.validateTransaction(other.address, targetContract.address, txAmount, calldata)
+      ).to.be.revertedWith("Exceeds shared weekly limit");
+    });
+
+    it("should not enforce shared budget when disabled", async function () {
+      // No shared budget set — should pass individual limits only
+      await grantDefaultSession();
+      const calldata = SELECTOR_CREATE_PACT + "0".repeat(56);
+
+      await expect(
+        module.validateTransaction(agent.address, targetContract.address, ethers.parseEther("0.3"), calldata)
+      ).to.emit(module, "TransactionValidated");
+    });
+
+    it("should return max uint when budget not enabled", async function () {
+      const available = await module.getAvailableBudget();
+      expect(available).to.equal(ethers.MaxUint256);
+    });
+
+    it("should reset shared daily counter after 24 hours", async function () {
+      const longExpiry = (await time.latest()) + 30 * 86400;
+      await module.setSharedBudget(ethers.parseEther("1.0"), ethers.parseEther("10.0"));
+      await module.grantSession(
+        agent.address, MAX_PER_TX, MAX_DAILY, MAX_WEEKLY, 0,
+        [targetContract.address], [SELECTOR_CREATE_PACT], [], longExpiry
+      );
+
+      const calldata = SELECTOR_CREATE_PACT + "0".repeat(56);
+
+      // Spend to shared daily limit
+      await module.validateTransaction(agent.address, targetContract.address, ethers.parseEther("0.5"), calldata);
+      await module.validateTransaction(agent.address, targetContract.address, ethers.parseEther("0.5"), calldata);
+
+      // Should fail
+      await expect(
+        module.validateTransaction(agent.address, targetContract.address, ethers.parseEther("0.1"), calldata)
+      ).to.be.revertedWith("Exceeds shared daily limit");
+
+      // Advance 1 day — daily resets
+      await time.increase(86401);
+      await expect(
+        module.validateTransaction(agent.address, targetContract.address, ethers.parseEther("0.5"), calldata)
+      ).to.emit(module, "TransactionValidated");
+    });
+  });
+
+  // ──────────────────────────────────────────────
+  // Budget Reservations
+  // ──────────────────────────────────────────────
+
+  describe("Budget Reservations", function () {
+    const SHARED_DAILY = ethers.parseEther("5.0");
+    const SHARED_WEEKLY = ethers.parseEther("10.0");
+
+    beforeEach(async function () {
+      await module.setSharedBudget(SHARED_DAILY, SHARED_WEEKLY);
+      await grantDefaultSession();
+    });
+
+    it("should allow agent to reserve budget", async function () {
+      const amount = ethers.parseEther("2.0");
+
+      await expect(module.connect(agent).reserveBudget(amount))
+        .to.emit(module, "BudgetReserved")
+        .withArgs(0, agent.address, amount);
+
+      const r = await module.getReservation(0);
+      expect(r.sessionKey).to.equal(agent.address);
+      expect(r.amount).to.equal(amount);
+      expect(r.active).to.be.true;
+
+      const b = await module.getSharedBudget();
+      expect(b.totalReserved).to.equal(amount);
+    });
+
+    it("should reduce available budget after reservation", async function () {
+      const amount = ethers.parseEther("4.0");
+      await module.connect(agent).reserveBudget(amount);
+
+      const available = await module.getAvailableBudget();
+      expect(available).to.equal(SHARED_WEEKLY - amount);
+    });
+
+    it("should reject reservation exceeding available budget", async function () {
+      // Reserve almost all
+      await module.connect(agent).reserveBudget(ethers.parseEther("9.0"));
+
+      // Try to reserve more than remaining
+      await expect(
+        module.connect(agent).reserveBudget(ethers.parseEther("2.0"))
+      ).to.be.revertedWith("Exceeds available shared budget");
+    });
+
+    it("should reject reservation from non-active session", async function () {
+      await expect(
+        module.connect(other).reserveBudget(ethers.parseEther("1.0"))
+      ).to.be.revertedWith("Session not active");
+    });
+
+    it("should reject zero amount reservation", async function () {
+      await expect(
+        module.connect(agent).reserveBudget(0)
+      ).to.be.revertedWith("Amount must be > 0");
+    });
+
+    it("should reject reservation when shared budget not enabled", async function () {
+      await module.disableSharedBudget();
+      await expect(
+        module.connect(agent).reserveBudget(ethers.parseEther("1.0"))
+      ).to.be.revertedWith("Shared budget not enabled");
+    });
+
+    it("should allow releasing a reservation", async function () {
+      const amount = ethers.parseEther("3.0");
+      await module.connect(agent).reserveBudget(amount);
+
+      await expect(module.connect(agent).releaseBudget(0))
+        .to.emit(module, "BudgetReleased")
+        .withArgs(0, amount);
+
+      const r = await module.getReservation(0);
+      expect(r.active).to.be.false;
+
+      const b = await module.getSharedBudget();
+      expect(b.totalReserved).to.equal(0);
+    });
+
+    it("should allow owner to release any reservation", async function () {
+      await module.connect(agent).reserveBudget(ethers.parseEther("2.0"));
+
+      // Owner releases agent's reservation
+      await expect(module.releaseBudget(0))
+        .to.emit(module, "BudgetReleased");
+    });
+
+    it("should reject releasing inactive reservation", async function () {
+      await module.connect(agent).reserveBudget(ethers.parseEther("1.0"));
+      await module.connect(agent).releaseBudget(0);
+
+      await expect(
+        module.connect(agent).releaseBudget(0)
+      ).to.be.revertedWith("Reservation not active");
+    });
+
+    it("should reject unauthorized release", async function () {
+      await module.connect(agent).reserveBudget(ethers.parseEther("1.0"));
+
+      await expect(
+        module.connect(other).releaseBudget(0)
+      ).to.be.revertedWith("Not authorized");
+    });
+
+    it("should prevent two agents from over-reserving shared budget", async function () {
+      // Grant another agent session
+      await module.grantSession(
+        other.address, MAX_PER_TX, MAX_DAILY, MAX_WEEKLY, HUMAN_APPROVAL_ABOVE,
+        [targetContract.address], [SELECTOR_CREATE_PACT], [], expiresAt
+      );
+
+      // Agent reserves 6 ETH
+      await module.connect(agent).reserveBudget(ethers.parseEther("6.0"));
+
+      // Other agent tries to reserve 5 ETH (only 4 available)
+      await expect(
+        module.connect(other).reserveBudget(ethers.parseEther("5.0"))
+      ).to.be.revertedWith("Exceeds available shared budget");
+
+      // Other agent reserves 4 ETH (fits)
+      await module.connect(other).reserveBudget(ethers.parseEther("4.0"));
+
+      const b = await module.getSharedBudget();
+      expect(b.totalReserved).to.equal(SHARED_WEEKLY); // Fully reserved
+    });
+
+    it("should track reservations per session", async function () {
+      await module.connect(agent).reserveBudget(ethers.parseEther("1.0"));
+      await module.connect(agent).reserveBudget(ethers.parseEther("2.0"));
+
+      const ids = await module.getSessionReservations(agent.address);
+      expect(ids.length).to.equal(2);
+      expect(ids[0]).to.equal(0);
+      expect(ids[1]).to.equal(1);
+    });
+
+    it("should increment reservation IDs", async function () {
+      await module.connect(agent).reserveBudget(ethers.parseEther("1.0"));
+      await module.connect(agent).reserveBudget(ethers.parseEther("1.0"));
+
+      const r0 = await module.getReservation(0);
+      const r1 = await module.getReservation(1);
+      expect(r0.active).to.be.true;
+      expect(r1.active).to.be.true;
+    });
+
+    it("should restore available budget when reservation is released", async function () {
+      await module.connect(agent).reserveBudget(ethers.parseEther("8.0"));
+      expect(await module.getAvailableBudget()).to.equal(ethers.parseEther("2.0"));
+
+      await module.connect(agent).releaseBudget(0);
+      expect(await module.getAvailableBudget()).to.equal(SHARED_WEEKLY);
+    });
+  });
 });

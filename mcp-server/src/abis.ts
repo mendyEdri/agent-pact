@@ -99,10 +99,25 @@ export const AGENT_POLICY_MODULE_ABI = [
   "function sessionCount() view returns (uint256)",
   "function owner() view returns (address)",
 
+  // Shared budget
+  "function setSharedBudget(uint256 maxDaily, uint256 maxWeekly)",
+  "function disableSharedBudget()",
+  "function getSharedBudget() view returns (bool enabled, uint256 maxDaily, uint256 maxWeekly, uint256 dailySpent, uint256 weeklySpent, uint256 totalReserved)",
+  "function getAvailableBudget() view returns (uint256)",
+
+  // Budget reservations
+  "function reserveBudget(uint256 amount) returns (uint256)",
+  "function releaseBudget(uint256 reservationId)",
+  "function getReservation(uint256 reservationId) view returns (address sessionKey, uint256 amount, bool active)",
+  "function getSessionReservations(address sessionKey) view returns (uint256[])",
+
   "event SessionGranted(address indexed sessionKey, uint256 maxPerTx, uint256 maxDaily, uint256 maxWeekly, uint256 expiresAt)",
   "event SessionRevoked(address indexed sessionKey)",
   "event TransactionValidated(address indexed sessionKey, address indexed target, uint256 value)",
   "event TransactionExecuted(address indexed sessionKey, address indexed target, uint256 value)",
   "event TransactionRejected(address indexed sessionKey, address indexed target, uint256 value, string reason)",
   "event SpendingLimitHit(address indexed sessionKey, string limitType, uint256 spent, uint256 limit)",
+  "event SharedBudgetSet(uint256 maxDaily, uint256 maxWeekly)",
+  "event BudgetReserved(uint256 indexed reservationId, address indexed sessionKey, uint256 amount)",
+  "event BudgetReleased(uint256 indexed reservationId, uint256 amount)",
 ];

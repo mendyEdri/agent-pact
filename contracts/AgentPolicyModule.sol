@@ -44,10 +44,32 @@ contract AgentPolicyModule is Ownable {
         uint256 lastWeekReset;
     }
 
+    struct SharedBudget {
+        uint256 maxDaily;
+        uint256 maxWeekly;
+        uint256 dailySpent;
+        uint256 weeklySpent;
+        uint256 lastDayReset;
+        uint256 lastWeekReset;
+        uint256 totalReserved;
+        bool enabled;
+    }
+
+    struct Reservation {
+        address sessionKey;
+        uint256 amount;
+        bool active;
+    }
+
     ISafe public safe;
 
     mapping(address => AgentPolicy) internal _policies;
     mapping(address => SpendingTracker) public spending;
+
+    SharedBudget public sharedBudget;
+    uint256 public nextReservationId;
+    mapping(uint256 => Reservation) public reservations;
+    mapping(address => uint256[]) internal _sessionReservations;
 
     uint256 public sessionCount;
 
@@ -81,6 +103,9 @@ contract AgentPolicyModule is Ownable {
         uint256 spent,
         uint256 limit
     );
+    event SharedBudgetSet(uint256 maxDaily, uint256 maxWeekly);
+    event BudgetReserved(uint256 indexed reservationId, address indexed sessionKey, uint256 amount);
+    event BudgetReleased(uint256 indexed reservationId, uint256 amount);
 
     constructor(address _safe) Ownable(msg.sender) {
         require(_safe != address(0), "Invalid safe address");
@@ -139,6 +164,71 @@ contract AgentPolicyModule is Ownable {
         _policies[sessionKey].active = false;
         sessionCount--;
         emit SessionRevoked(sessionKey);
+    }
+
+    // ──────────────────────────────────────────────
+    // Shared Budget (owner only)
+    // ──────────────────────────────────────────────
+
+    function setSharedBudget(uint256 maxDaily, uint256 maxWeekly) external onlyOwner {
+        require(maxDaily > 0, "maxDaily must be > 0");
+        require(maxWeekly >= maxDaily, "maxWeekly must be >= maxDaily");
+
+        sharedBudget.maxDaily = maxDaily;
+        sharedBudget.maxWeekly = maxWeekly;
+        if (!sharedBudget.enabled) {
+            sharedBudget.lastDayReset = block.timestamp;
+            sharedBudget.lastWeekReset = block.timestamp;
+            sharedBudget.enabled = true;
+        }
+
+        emit SharedBudgetSet(maxDaily, maxWeekly);
+    }
+
+    function disableSharedBudget() external onlyOwner {
+        require(sharedBudget.enabled, "Shared budget not enabled");
+        sharedBudget.enabled = false;
+        emit SharedBudgetSet(0, 0);
+    }
+
+    // ──────────────────────────────────────────────
+    // Budget Reservations (session keys)
+    // ──────────────────────────────────────────────
+
+    function reserveBudget(uint256 amount) external returns (uint256) {
+        require(amount > 0, "Amount must be > 0");
+        require(_policies[msg.sender].active, "Session not active");
+        require(sharedBudget.enabled, "Shared budget not enabled");
+
+        // Check reservation doesn't exceed remaining shared budget capacity
+        uint256 available = sharedBudget.maxWeekly - sharedBudget.totalReserved;
+        require(amount <= available, "Exceeds available shared budget");
+
+        uint256 reservationId = nextReservationId++;
+        reservations[reservationId] = Reservation({
+            sessionKey: msg.sender,
+            amount: amount,
+            active: true
+        });
+        _sessionReservations[msg.sender].push(reservationId);
+        sharedBudget.totalReserved += amount;
+
+        emit BudgetReserved(reservationId, msg.sender, amount);
+        return reservationId;
+    }
+
+    function releaseBudget(uint256 reservationId) external {
+        Reservation storage r = reservations[reservationId];
+        require(r.active, "Reservation not active");
+        require(
+            r.sessionKey == msg.sender || msg.sender == owner(),
+            "Not authorized"
+        );
+
+        r.active = false;
+        sharedBudget.totalReserved -= r.amount;
+
+        emit BudgetReleased(reservationId, r.amount);
     }
 
     // ──────────────────────────────────────────────
@@ -277,7 +367,35 @@ contract AgentPolicyModule is Ownable {
             revert("Exceeds weekly limit");
         }
 
-        // All checks passed — record spending
+        // Check shared budget (if enabled)
+        if (sharedBudget.enabled && value > 0) {
+            // Reset shared budget counters if windows have rolled over
+            if (block.timestamp > sharedBudget.lastDayReset + 1 days) {
+                sharedBudget.dailySpent = 0;
+                sharedBudget.lastDayReset = block.timestamp;
+            }
+            if (block.timestamp > sharedBudget.lastWeekReset + 7 days) {
+                sharedBudget.weeklySpent = 0;
+                sharedBudget.lastWeekReset = block.timestamp;
+            }
+
+            uint256 effectiveDaily = sharedBudget.dailySpent + value;
+            if (effectiveDaily > sharedBudget.maxDaily) {
+                emit TransactionRejected(sessionKey, to, value, "Exceeds shared daily limit");
+                revert("Exceeds shared daily limit");
+            }
+
+            uint256 effectiveWeekly = sharedBudget.weeklySpent + value;
+            if (effectiveWeekly > sharedBudget.maxWeekly) {
+                emit TransactionRejected(sessionKey, to, value, "Exceeds shared weekly limit");
+                revert("Exceeds shared weekly limit");
+            }
+
+            sharedBudget.dailySpent = effectiveDaily;
+            sharedBudget.weeklySpent = effectiveWeekly;
+        }
+
+        // All checks passed — record individual spending
         tracker.dailySpent += value;
         tracker.weeklySpent += value;
 
@@ -326,5 +444,36 @@ contract AgentPolicyModule is Ownable {
     function isSessionActive(address sessionKey) external view returns (bool) {
         AgentPolicy storage p = _policies[sessionKey];
         return p.active && block.timestamp <= p.expiresAt;
+    }
+
+    function getSharedBudget() external view returns (
+        bool enabled,
+        uint256 maxDaily,
+        uint256 maxWeekly,
+        uint256 dailySpent,
+        uint256 weeklySpent,
+        uint256 totalReserved
+    ) {
+        SharedBudget storage b = sharedBudget;
+        return (b.enabled, b.maxDaily, b.maxWeekly, b.dailySpent, b.weeklySpent, b.totalReserved);
+    }
+
+    function getAvailableBudget() external view returns (uint256) {
+        if (!sharedBudget.enabled) return type(uint256).max;
+        if (sharedBudget.totalReserved >= sharedBudget.maxWeekly) return 0;
+        return sharedBudget.maxWeekly - sharedBudget.totalReserved;
+    }
+
+    function getReservation(uint256 reservationId) external view returns (
+        address sessionKey,
+        uint256 amount,
+        bool active
+    ) {
+        Reservation storage r = reservations[reservationId];
+        return (r.sessionKey, r.amount, r.active);
+    }
+
+    function getSessionReservations(address sessionKey) external view returns (uint256[] memory) {
+        return _sessionReservations[sessionKey];
     }
 }
