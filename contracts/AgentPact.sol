@@ -53,6 +53,8 @@ contract AgentPact is ReentrancyGuard {
         Initiator initiator;
         uint256 reviewPeriod;
         uint256 verifiedAt;
+        uint256 oracleFee;
+        bool oracleFeesPaid;
     }
 
     uint256 public nextPactId;
@@ -117,6 +119,7 @@ contract AgentPact is ReentrancyGuard {
         uint256 disputesLost,
         uint256 totalVolumeWei
     );
+    event OracleFeePaid(uint256 indexed pactId, address indexed oracle, uint256 amount);
 
     modifier onlyBuyer(uint256 pactId) {
         require(msg.sender == pacts[pactId].buyer, "Not buyer");
@@ -145,7 +148,8 @@ contract AgentPact is ReentrancyGuard {
         uint8[] calldata oracleWeights,
         uint8 verificationThreshold,
         uint256 paymentAmount,
-        uint256 reviewPeriod
+        uint256 reviewPeriod,
+        uint256 oracleFee
     ) external payable returns (uint256) {
         require(oracles.length > 0, "Need at least one oracle");
         require(oracles.length == oracleWeights.length, "Oracles/weights mismatch");
@@ -172,15 +176,16 @@ contract AgentPact is ReentrancyGuard {
         pact.createdAt = block.timestamp;
         pact.initiator = _initiator;
         pact.reviewPeriod = reviewPeriod > 0 ? reviewPeriod : DEFAULT_REVIEW_PERIOD;
+        pact.oracleFee = oracleFee;
 
         if (_initiator == Initiator.BUYER) {
-            // Buyer creates: deposits payment + 10% buyer stake
-            uint256 requiredDeposit = paymentAmount + paymentAmount / STAKE_PERCENT;
+            // Buyer creates: deposits payment + oracleFee + 10% buyer stake
+            uint256 requiredDeposit = paymentAmount + oracleFee + paymentAmount / STAKE_PERCENT;
             require(msg.value >= requiredDeposit, "Insufficient buyer deposit");
             pact.buyer = msg.sender;
-            pact.buyerStake = msg.value - paymentAmount;
+            pact.buyerStake = msg.value - paymentAmount - oracleFee;
         } else {
-            // Seller creates: deposits 10% seller stake only
+            // Seller creates: deposits 10% seller stake only (buyer pays oracle fee on accept)
             uint256 requiredStake = paymentAmount / STAKE_PERCENT;
             require(msg.value >= requiredStake, "Insufficient seller stake");
             pact.seller = msg.sender;
@@ -216,12 +221,12 @@ contract AgentPact is ReentrancyGuard {
             pact.seller = msg.sender;
             pact.sellerStake = msg.value;
         } else {
-            // Seller created → accepter becomes buyer
+            // Seller created → accepter becomes buyer (pays payment + oracleFee + buyerStake)
             require(msg.sender != pact.seller, "Creator cannot accept own pact");
-            uint256 requiredDeposit = pact.payment + pact.payment / STAKE_PERCENT;
+            uint256 requiredDeposit = pact.payment + pact.oracleFee + pact.payment / STAKE_PERCENT;
             require(msg.value >= requiredDeposit, "Insufficient buyer deposit");
             pact.buyer = msg.sender;
-            pact.buyerStake = msg.value - pact.payment;
+            pact.buyerStake = msg.value - pact.payment - pact.oracleFee;
         }
 
         pact.status = Status.FUNDED;
@@ -420,6 +425,9 @@ contract AgentPact is ReentrancyGuard {
         }
         weightedScore = weightedScore / 100; // Normalize since weights sum to 100
 
+        // Pay oracle fees (oracles did their job regardless of pass/fail)
+        _payOracleFees(pactId);
+
         if (weightedScore >= pact.verificationThreshold) {
             // Score passes → move to PENDING_APPROVAL for buyer review
             pact.status = Status.PENDING_APPROVAL;
@@ -492,6 +500,29 @@ contract AgentPact is ReentrancyGuard {
         emit ReputationUpdated(user, r.completedAsBuyer, r.completedAsSeller, r.disputesLost, r.totalVolumeWei);
     }
 
+    function _payOracleFees(uint256 pactId) internal {
+        Pact storage pact = pacts[pactId];
+        if (pact.oracleFee == 0 || pact.oracleFeesPaid) return;
+        pact.oracleFeesPaid = true;
+
+        uint256 remaining = pact.oracleFee;
+        for (uint256 i = 0; i < pact.oracles.length; i++) {
+            uint256 share;
+            if (i == pact.oracles.length - 1) {
+                // Last oracle gets remainder to avoid dust from rounding
+                share = remaining;
+            } else {
+                share = (pact.oracleFee * pact.oracleWeights[i]) / 100;
+                remaining -= share;
+            }
+            if (share > 0) {
+                (bool sent, ) = pact.oracles[i].call{value: share}("");
+                require(sent, "Failed to pay oracle fee");
+                emit OracleFeePaid(pactId, pact.oracles[i], share);
+            }
+        }
+    }
+
     function _releaseFunds(uint256 pactId) internal {
         Pact storage pact = pacts[pactId];
         pact.status = Status.COMPLETED;
@@ -544,6 +575,8 @@ contract AgentPact is ReentrancyGuard {
         Pact storage pact = pacts[pactId];
         require(msg.sender == pact.arbitrator, "Not arbitrator");
 
+        uint256 unpaidFee = pact.oracleFeesPaid ? 0 : pact.oracleFee;
+
         if (sellerWins) {
             pact.status = Status.COMPLETED;
 
@@ -551,7 +584,7 @@ contract AgentPact is ReentrancyGuard {
             _updateReputation(pact.seller, false, true, pact.payment);
             _penalizeReputation(pact.buyer);
 
-            uint256 sellerPayout = pact.payment + pact.sellerStake + pact.buyerStake;
+            uint256 sellerPayout = pact.payment + unpaidFee + pact.sellerStake + pact.buyerStake;
 
             (bool sent, ) = pact.seller.call{value: sellerPayout}("");
             require(sent, "Failed to pay seller");
@@ -561,7 +594,7 @@ contract AgentPact is ReentrancyGuard {
             // Seller at fault: penalized
             _penalizeReputation(pact.seller);
 
-            uint256 buyerRefund = pact.payment + pact.buyerStake + pact.sellerStake;
+            uint256 buyerRefund = pact.payment + unpaidFee + pact.buyerStake + pact.sellerStake;
 
             (bool sent, ) = pact.buyer.call{value: buyerRefund}("");
             require(sent, "Failed to refund buyer");
@@ -584,7 +617,7 @@ contract AgentPact is ReentrancyGuard {
             _removeOpenPact(pactId);
 
             if (pact.initiator == Initiator.BUYER) {
-                uint256 refund = pact.payment + pact.buyerStake;
+                uint256 refund = pact.payment + pact.oracleFee + pact.buyerStake;
                 (bool sent, ) = pact.buyer.call{value: refund}("");
                 require(sent, "Failed to refund buyer");
             } else {
@@ -606,7 +639,8 @@ contract AgentPact is ReentrancyGuard {
             // Seller at fault for timeout
             _penalizeReputation(pact.seller);
 
-            uint256 buyerRefund = pact.payment + pact.buyerStake + pact.sellerStake;
+            uint256 unpaidFee = pact.oracleFeesPaid ? 0 : pact.oracleFee;
+            uint256 buyerRefund = pact.payment + unpaidFee + pact.buyerStake + pact.sellerStake;
             (bool sent, ) = pact.buyer.call{value: buyerRefund}("");
             require(sent, "Failed to refund buyer");
 
@@ -633,7 +667,9 @@ contract AgentPact is ReentrancyGuard {
         uint256 sellerStake,
         Initiator initiator,
         uint256 reviewPeriod,
-        uint256 verifiedAt
+        uint256 verifiedAt,
+        uint256 oracleFee,
+        bool oracleFeesPaid
     ) {
         Pact storage pact = pacts[pactId];
         return (
@@ -648,7 +684,9 @@ contract AgentPact is ReentrancyGuard {
             pact.sellerStake,
             pact.initiator,
             pact.reviewPeriod,
-            pact.verifiedAt
+            pact.verifiedAt,
+            pact.oracleFee,
+            pact.oracleFeesPaid
         );
     }
 

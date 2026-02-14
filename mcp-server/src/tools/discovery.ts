@@ -39,6 +39,7 @@ export function registerDiscoveryTools(server: McpServer, config: Config) {
               pactId: Number(id),
               type: INITIATOR_NAMES[Number(p.initiator)] === "BUYER" ? "REQUEST (buyer seeking seller)" : "LISTING (seller offering service)",
               payment: ethers.formatEther(p.payment) + " ETH",
+              oracleFee: ethers.formatEther(p.oracleFee) + " ETH",
               deadline: new Date(Number(p.deadline_) * 1000).toISOString(),
               specHash: p.specHash,
               creator: p.initiator === 0n ? p.buyer : p.seller,

@@ -10,7 +10,7 @@ export const AGENT_PACT_ABI = [
   "function DEFAULT_REVIEW_PERIOD() view returns (uint256)",
 
   // Pact lifecycle
-  "function createPact(uint8 _initiator, bytes32 specHash, uint256 deadline, address[] oracles, uint8[] oracleWeights, uint8 verificationThreshold, uint256 paymentAmount, uint256 reviewPeriod) payable returns (uint256)",
+  "function createPact(uint8 _initiator, bytes32 specHash, uint256 deadline, address[] oracles, uint8[] oracleWeights, uint8 verificationThreshold, uint256 paymentAmount, uint256 reviewPeriod, uint256 oracleFee) payable returns (uint256)",
   "function acceptPact(uint256 pactId) payable",
   "function startWork(uint256 pactId)",
   "function submitWork(uint256 pactId, bytes32 proofHash)",
@@ -34,7 +34,7 @@ export const AGENT_PACT_ABI = [
   "function claimTimeout(uint256 pactId)",
 
   // View functions
-  "function getPact(uint256 pactId) view returns (address buyer, address seller, uint256 payment, uint256 deadline_, uint8 status, bytes32 specHash, uint8 verificationThreshold, uint256 buyerStake, uint256 sellerStake, uint8 initiator, uint256 reviewPeriod, uint256 verifiedAt)",
+  "function getPact(uint256 pactId) view returns (address buyer, address seller, uint256 payment, uint256 deadline_, uint8 status, bytes32 specHash, uint8 verificationThreshold, uint256 buyerStake, uint256 sellerStake, uint8 initiator, uint256 reviewPeriod, uint256 verifiedAt, uint256 oracleFee, bool oracleFeesPaid)",
   "function getPactOracles(uint256 pactId) view returns (address[], uint8[])",
   "function getVerification(uint256 pactId, address oracle) view returns (uint8 score, bool hasSubmitted, bytes32 proof)",
   "function getAmendment(uint256 pactId) view returns (uint256 payment, uint256 deadline_, bytes32 specHash, address proposedBy, bool pending)",
@@ -62,6 +62,7 @@ export const AGENT_PACT_ABI = [
   "event AmendmentProposed(uint256 indexed pactId, address indexed proposedBy, uint256 payment, uint256 deadline, bytes32 specHash)",
   "event AmendmentAccepted(uint256 indexed pactId, address indexed acceptedBy)",
   "event ReputationUpdated(address indexed user, uint256 completedAsBuyer, uint256 completedAsSeller, uint256 disputesLost, uint256 totalVolumeWei)",
+  "event OracleFeePaid(uint256 indexed pactId, address indexed oracle, uint256 amount)",
 ];
 
 export const ORACLE_REGISTRY_ABI = [

@@ -21,16 +21,18 @@ export function registerPactTools(server: McpServer, config: Config, executor: S
       threshold: z.number().int().min(0).max(100).describe("Minimum weighted score to pass (0-100)"),
       paymentEth: z.string().describe("Payment amount in ETH (e.g. '0.5')"),
       reviewPeriod: z.number().int().min(0).default(0).describe("Buyer review window in seconds (default: 3 days)"),
+      oracleFeeEth: z.string().default("0").describe("Total oracle fee in ETH (split by weight among oracles at verification)"),
     },
-    async ({ role, specHash, deadline, oracles, oracleWeights, threshold, paymentEth, reviewPeriod }) => {
+    async ({ role, specHash, deadline, oracles, oracleWeights, threshold, paymentEth, reviewPeriod, oracleFeeEth }) => {
       try {
         const paymentWei = ethers.parseEther(paymentEth);
+        const oracleFeeWei = ethers.parseEther(oracleFeeEth);
         const stakeWei = paymentWei / 10n;
         const initiator = role === "buyer" ? 0 : 1;
 
         let depositWei: bigint;
         if (role === "buyer") {
-          depositWei = paymentWei + stakeWei;
+          depositWei = paymentWei + oracleFeeWei + stakeWei;
         } else {
           depositWei = stakeWei;
         }
@@ -39,7 +41,7 @@ export function registerPactTools(server: McpServer, config: Config, executor: S
         const specBytes = specHash.startsWith("0x") ? specHash : ethers.keccak256(ethers.toUtf8Bytes(specHash));
 
         const calldata = agentPactIface.encodeFunctionData("createPact", [
-          initiator, specBytes, deadline, oracles, oracleWeights, threshold, paymentWei, reviewPeriod,
+          initiator, specBytes, deadline, oracles, oracleWeights, threshold, paymentWei, reviewPeriod, oracleFeeWei,
         ]);
 
         const receipt = await executor.execute(config.agentPactAddress, depositWei, calldata);
@@ -51,8 +53,9 @@ export function registerPactTools(server: McpServer, config: Config, executor: S
         const pactId = event?.args?.pactId?.toString() ?? "unknown";
 
         const depositEth = ethers.formatEther(depositWei);
+        const feeDesc = oracleFeeWei > 0n ? ` + ${oracleFeeEth} oracle fee` : "";
         const roleDesc = role === "buyer"
-          ? `Deposited: ${depositEth} ETH (${paymentEth} payment + ${ethers.formatEther(stakeWei)} stake). Open for sellers.`
+          ? `Deposited: ${depositEth} ETH (${paymentEth} payment${feeDesc} + ${ethers.formatEther(stakeWei)} stake). Open for sellers.`
           : `Staked ${depositEth} ETH. Listing open for buyers.`;
 
         return {
@@ -84,13 +87,15 @@ export function registerPactTools(server: McpServer, config: Config, executor: S
         let depositWei: bigint;
         let roleAssigned: string;
 
+        const oracleFeeWei = p.oracleFee as bigint;
+
         if (initiator === 0) {
           // Buyer created → we become seller, deposit seller stake
           depositWei = stakeWei;
           roleAssigned = "SELLER";
         } else {
-          // Seller created → we become buyer, deposit payment + buyer stake
-          depositWei = paymentWei + stakeWei;
+          // Seller created → we become buyer, deposit payment + oracle fee + buyer stake
+          depositWei = paymentWei + oracleFeeWei + stakeWei;
           roleAssigned = "BUYER";
         }
 

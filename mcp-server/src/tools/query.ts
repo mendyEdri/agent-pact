@@ -48,6 +48,8 @@ export function registerQueryTools(server: McpServer, config: Config) {
               verifiedAt: Number(p.verifiedAt) > 0
                 ? new Date(Number(p.verifiedAt) * 1000).toISOString()
                 : "not yet verified",
+              oracleFee: ethers.formatEther(p.oracleFee) + " ETH",
+              oracleFeesPaid: p.oracleFeesPaid,
               oracles: oracles.map((addr: string, i: number) => ({
                 address: addr,
                 weight: Number(weights[i]),
