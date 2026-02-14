@@ -7,6 +7,7 @@ export interface Config {
   rpcUrl: string;
   agentPactAddress: string;
   oracleRegistryAddress: string;
+  oracleRouterAddress: string;
   policyModuleAddress: string;
   chainId: number;
   maxPerTxEth: string;
@@ -28,6 +29,7 @@ export function loadConfig(): Config {
     rpcUrl: process.env.RPC_URL ?? "https://sepolia.base.org",
     agentPactAddress: requireEnv("AGENT_PACT_ADDRESS"),
     oracleRegistryAddress: requireEnv("ORACLE_REGISTRY_ADDRESS"),
+    oracleRouterAddress: requireEnv("ORACLE_ROUTER_ADDRESS"),
     policyModuleAddress: requireEnv("POLICY_MODULE_ADDRESS"),
     chainId: parseInt(process.env.CHAIN_ID ?? "84532"),
     maxPerTxEth: process.env.MAX_PER_TX_ETH ?? "0.5",

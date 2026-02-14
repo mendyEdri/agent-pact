@@ -14,6 +14,7 @@ import { registerDisputeTools } from "./tools/dispute.js";
 import { registerFinalizeTools } from "./tools/finalize.js";
 import { registerWalletTools } from "./tools/wallet.js";
 import { registerDiscoveryTools } from "./tools/discovery.js";
+import { registerRouterTools, registerRouterQueryTools } from "./tools/router.js";
 import { registerResources } from "./resources/contracts.js";
 
 async function main() {
@@ -24,6 +25,7 @@ async function main() {
   console.error(`Chain: ${config.chainId}, RPC: ${config.rpcUrl}`);
   console.error(`AgentPact: ${config.agentPactAddress}`);
   console.error(`OracleRegistry: ${config.oracleRegistryAddress}`);
+  console.error(`OracleRouter: ${config.oracleRouterAddress}`);
   console.error(`PolicyModule: ${config.policyModuleAddress}`);
   console.error(`Safe: ${config.safeAddress}`);
 
@@ -51,6 +53,8 @@ async function main() {
   registerFinalizeTools(server, config, executor);
   registerWalletTools(server, config, policy, tracker, executor);
   registerDiscoveryTools(server, config);
+  registerRouterTools(server, config, executor);
+  registerRouterQueryTools(server, config);
 
   // Register resources
   registerResources(server, config);
