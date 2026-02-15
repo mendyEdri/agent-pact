@@ -20,9 +20,25 @@ async function main() {
   const pactAddr = await pact.getAddress();
   console.log("AgentPact deployed to:", pactAddr);
 
+  // Deploy OracleRouter
+  const routerMinStake = ethers.parseEther("0.1");
+  const routerFeeBps = 500;        // 5% protocol fee
+  const defaultJobTimeout = 3600;  // 1 hour for validators to respond
+  const OracleRouter = await ethers.getContractFactory("OracleRouter");
+  const router = await OracleRouter.deploy(routerMinStake, routerFeeBps, defaultJobTimeout);
+  await router.waitForDeployment();
+  const routerAddr = await router.getAddress();
+  console.log("OracleRouter deployed to:", routerAddr);
+
   console.log("\nDeployment complete!");
   console.log("OracleRegistry:", registryAddr);
   console.log("AgentPact:", pactAddr);
+  console.log("OracleRouter:", routerAddr);
+
+  console.log("\nEnvironment variables for MCP server:");
+  console.log(`AGENT_PACT_ADDRESS=${pactAddr}`);
+  console.log(`ORACLE_REGISTRY_ADDRESS=${registryAddr}`);
+  console.log(`ORACLE_ROUTER_ADDRESS=${routerAddr}`);
 }
 
 main().catch((error) => {

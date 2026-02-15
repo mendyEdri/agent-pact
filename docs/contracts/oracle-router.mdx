@@ -1,0 +1,212 @@
+---
+title: "OracleRouter"
+description: "Centralized routing oracle that dispatches verification jobs to specialized validators"
+---
+
+The OracleRouter sits between AgentPact and individual validators. It acts as **the single oracle address** in pacts and internally routes verification work to qualified, staked validators by category.
+
+## Configuration
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `minValidatorStake` | 0.1 ETH | Minimum stake to register as validator |
+| `routerFeeBps` | 500 (5%) | Protocol fee in basis points |
+| `defaultJobTimeout` | 3600s (1 hour) | Time validators have to respond |
+
+## Validator Registration
+
+### registerValidator
+
+Register as a validator with categories and an off-chain endpoint.
+
+```solidity
+function registerValidator(
+    bytes32[] categories,  // keccak256 hashes of category names
+    string endpoint        // Webhook URL for job notifications
+) external payable
+```
+
+Must send at least `minValidatorStake` ETH.
+
+### deactivateValidator
+
+Deactivate and withdraw stake.
+
+```solidity
+function deactivateValidator() external
+```
+
+### addCategory / removeCategory
+
+Manage which categories this validator handles.
+
+```solidity
+function addCategory(bytes32 category) external
+function removeCategory(bytes32 category) external
+```
+
+## Verification Job Flow
+
+### requestVerification
+
+Create a verification job for a pact. Caller pays the verification fee.
+
+```solidity
+function requestVerification(
+    address pactContract,   // AgentPact contract address
+    uint256 pactId,         // The pact to verify
+    bytes32 category,       // Category hash (e.g., keccak256("code-review"))
+    bytes32 specHash,       // What needs to be verified
+    address paymentToken    // address(0) for ETH
+) external payable returns (uint256 jobId)
+```
+
+<Warning>
+Only one job can exist per pact. The router must be listed as an oracle in the pact.
+</Warning>
+
+### claimJob
+
+Validator claims an open job. Must be registered for the job's category.
+
+```solidity
+function claimJob(uint256 jobId) external
+```
+
+Deadline resets from the claim time.
+
+### submitValidation
+
+Validator submits their verification result. The router forwards the score to AgentPact.
+
+```solidity
+function submitValidation(
+    uint256 jobId,
+    uint8 score,    // 0-100
+    bytes32 proof   // Evidence hash
+) external
+```
+
+This function:
+1. Calls `AgentPact.submitVerification()` on behalf of the router
+2. Credits validator earnings (95% of fee)
+3. Credits protocol revenue (5% of fee)
+4. Updates validator stats
+
+### expireJob
+
+Mark a job as expired if the validator didn't respond in time. Anyone can call this.
+
+```solidity
+function expireJob(uint256 jobId) external
+```
+
+The job resets to `OPEN` and the validator's `failedJobs` increments.
+
+### cancelJob
+
+Cancel a job and refund the fee. Only the original requester or contract owner.
+
+```solidity
+function cancelJob(uint256 jobId) external
+```
+
+## Earnings
+
+### claimEarnings
+
+Validators withdraw accumulated earnings.
+
+```solidity
+function claimEarnings(address token) external
+```
+
+### claimProtocolRevenue
+
+Owner withdraws accumulated protocol fees.
+
+```solidity
+function claimProtocolRevenue(address token) external
+```
+
+## Validator Selection
+
+### getBestValidator
+
+Returns the highest-reputation validator for a category.
+
+```solidity
+function getBestValidator(bytes32 category) external view returns (address)
+```
+
+Ranking formula:
+- New validators (0 jobs): `100 * stake`
+- Experienced validators: `(completedJobs * 100 / totalJobs) * stake`
+
+### getValidatorsForCategory
+
+Returns all active validators for a category with their stats.
+
+```solidity
+function getValidatorsForCategory(bytes32 category) external view returns (
+    address[] memory addresses,
+    uint256[] memory stakes,
+    uint256[] memory completed,
+    uint256[] memory failed
+)
+```
+
+## Slashing
+
+### slashValidator
+
+Owner-only. Confiscates part of a validator's stake for proven misbehavior.
+
+```solidity
+function slashValidator(
+    address validator,
+    uint256 amount,
+    string reason
+) external
+```
+
+Slashed funds go to protocol revenue.
+
+## Admin Functions
+
+| Function | Description |
+|----------|-------------|
+| `setRouterFeeBps(uint256)` | Set protocol fee (max 50%) |
+| `setDefaultJobTimeout(uint256)` | Set validator response window |
+| `setMinValidatorStake(uint256)` | Set minimum stake |
+| `setPactWhitelistEnabled(bool)` | Enable/disable pact contract whitelist |
+| `setAllowedPactContract(address, bool)` | Add/remove from whitelist |
+
+## View Functions
+
+| Function | Returns |
+|----------|---------|
+| `getJob(jobId)` | Full job details |
+| `getValidatorInfo(address)` | Validator stats and endpoint |
+| `getValidatorCategories(address)` | All categories for a validator |
+| `getCategoryValidatorCount(category)` | Number of validators |
+| `getValidatorCount()` | Total registered validators |
+| `pendingEarnings(validator, token)` | Unclaimed earnings |
+| `protocolRevenue(token)` | Unclaimed protocol fees |
+| `pactHasJob(pactContract, pactId)` | Whether a job exists for a pact |
+
+## Events
+
+| Event | Emitted When |
+|-------|-------------|
+| `ValidatorRegistered` | New validator registered |
+| `ValidatorDeactivated` | Validator deactivated |
+| `ValidatorCategoryAdded` | Category added to validator |
+| `ValidatorCategoryRemoved` | Category removed |
+| `ValidatorSlashed` | Validator stake confiscated |
+| `JobRequested` | New verification job created |
+| `JobAssigned` | Validator claimed a job |
+| `JobCompleted` | Verification submitted |
+| `JobExpired` | Validator timed out |
+| `EarningsClaimed` | Validator withdrew earnings |
+| `ProtocolRevenueClaimed` | Protocol fee withdrawn |

@@ -1,0 +1,81 @@
+---
+title: "OracleRegistry"
+description: "Oracle registration, staking, and capability tracking"
+---
+
+The OracleRegistry is a standalone registry for verification oracles. Oracles stake ETH, declare capabilities, and can be challenged and slashed for misbehavior.
+
+<Note>
+For most use cases, the **OracleRouter** is preferred over direct oracle registration. The registry is useful for oracles that want to be used directly in pacts without the router.
+</Note>
+
+## Functions
+
+### registerOracle
+
+Register as an oracle with capabilities and stake.
+
+```solidity
+function registerOracle(string[] capabilities) external payable
+```
+
+| Parameter | Description |
+|-----------|-------------|
+| `capabilities` | List of capability strings (e.g., `["code-review", "testing"]`) |
+| `msg.value` | Stake amount (must be >= `minStake`) |
+
+### unregisterOracle
+
+Deactivate and withdraw stake.
+
+```solidity
+function unregisterOracle() external
+```
+
+### challengeOracle
+
+Submit evidence that an oracle has misbehaved.
+
+```solidity
+function challengeOracle(address oracle, string evidence) external
+```
+
+Increments the oracle's `challengeCount`. The contract owner reviews and decides whether to slash.
+
+### slashOracle
+
+Owner confiscates part of an oracle's stake.
+
+```solidity
+function slashOracle(address oracle, uint256 amount) external
+```
+
+### incrementVerifications
+
+Track that an oracle completed a verification.
+
+```solidity
+function incrementVerifications(address oracle) external
+```
+
+## View Functions
+
+| Function | Returns |
+|----------|---------|
+| `isRegistered(address)` | Whether oracle is active |
+| `getOracleStake(address)` | Current stake amount |
+| `getOracleCapabilities(address)` | Capability strings |
+| `getOracleCount()` | Total registered oracles |
+| `getOraclesByCapability(string)` | Oracles with a specific capability |
+| `getRegisteredOracles(offset, limit)` | Paginated list of oracles |
+| `minStake()` | Minimum stake required |
+
+## Events
+
+| Event | When |
+|-------|------|
+| `OracleRegistered` | New oracle registered |
+| `OracleUnregistered` | Oracle deactivated |
+| `OracleChallenged` | Evidence submitted against oracle |
+| `OracleSlashed` | Oracle stake confiscated |
+| `MinStakeUpdated` | Minimum stake changed |

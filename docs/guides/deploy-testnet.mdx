@@ -1,0 +1,172 @@
+---
+title: "Deploy to Testnet"
+description: "Full guide to deploying Agent Pact contracts on Base Sepolia"
+---
+
+This guide deploys all Agent Pact contracts to Base Sepolia and configures the MCP server.
+
+## Prerequisites
+
+- Node.js v20+
+- A wallet with Base Sepolia ETH ([faucet](https://www.coinbase.com/faucets/base-ethereum-goerli-faucet))
+- A [Safe wallet](https://app.safe.global/) on Base Sepolia (for agent transactions)
+
+## 1. Install Dependencies
+
+```bash
+git clone https://github.com/mendyEdri/agent-pact.git
+cd agent-pact
+npm install
+```
+
+## 2. Configure Deployment
+
+Create a `.env` file in the project root:
+
+```bash
+DEPLOYER_PRIVATE_KEY=0x...your_deployer_private_key...
+RPC_URL=https://sepolia.base.org
+```
+
+## 3. Deploy Contracts
+
+```bash
+npx hardhat run scripts/deploy.ts --network baseSepolia
+```
+
+Output:
+
+```
+Deploying contracts with: 0xYourDeployer...
+Balance: 0.5 ETH
+
+OracleRegistry deployed to: 0xAAAA...
+AgentPact deployed to: 0xBBBB...
+OracleRouter deployed to: 0xCCCC...
+
+Deployment complete!
+
+Environment variables for MCP server:
+AGENT_PACT_ADDRESS=0xBBBB...
+ORACLE_REGISTRY_ADDRESS=0xAAAA...
+ORACLE_ROUTER_ADDRESS=0xCCCC...
+```
+
+Save these addresses.
+
+## 4. Set Up Safe Wallets
+
+Each agent needs a Safe wallet. Go to [app.safe.global](https://app.safe.global/):
+
+1. Create a new Safe on Base Sepolia
+2. Fund it with testnet ETH
+3. Deploy the AgentPolicyModule (or use direct owner signing for testing)
+
+For testing, you can use EOA wallets directly — the MCP server's SafeExecutor will handle transaction routing.
+
+## 5. Configure the MCP Server
+
+```bash
+cd mcp-server
+cp .env.example .env
+```
+
+Edit `.env`:
+
+```bash
+# Agent identity
+SESSION_KEY=0x...agent_private_key...
+SAFE_ADDRESS=0x...safe_address...
+
+# Contract addresses (from deploy output)
+AGENT_PACT_ADDRESS=0xBBBB...
+ORACLE_REGISTRY_ADDRESS=0xAAAA...
+ORACLE_ROUTER_ADDRESS=0xCCCC...
+POLICY_MODULE_ADDRESS=0x0000000000000000000000000000000000000000
+
+# Network
+RPC_URL=https://sepolia.base.org
+CHAIN_ID=84532
+
+# Spending limits
+MAX_PER_TX_ETH=0.5
+MAX_DAILY_ETH=2.0
+```
+
+## 6. Build and Run
+
+```bash
+npm run build
+npm start
+```
+
+You should see:
+
+```
+Starting Agent Pact MCP Server...
+Chain: 84532, RPC: https://sepolia.base.org
+AgentPact: 0xBBBB...
+OracleRouter: 0xCCCC...
+Agent Pact MCP Server running on stdio.
+```
+
+## 7. Connect to Claude
+
+Add the MCP server to your Claude configuration:
+
+```json
+{
+  "mcpServers": {
+    "agent-pact": {
+      "command": "node",
+      "args": ["path/to/agent-pact/mcp-server/dist/index.js"],
+      "env": {
+        "SESSION_KEY": "0x...",
+        "SAFE_ADDRESS": "0x...",
+        "AGENT_PACT_ADDRESS": "0x...",
+        "ORACLE_REGISTRY_ADDRESS": "0x...",
+        "ORACLE_ROUTER_ADDRESS": "0x...",
+        "POLICY_MODULE_ADDRESS": "0x...",
+        "RPC_URL": "https://sepolia.base.org",
+        "CHAIN_ID": "84532"
+      }
+    }
+  }
+}
+```
+
+## 8. Verify Deployment
+
+Ask the agent:
+
+```
+"What's my address and balance?"
+"How many pacts exist?"
+"Show me the oracle router stats."
+```
+
+If everything is connected, you'll see live on-chain data.
+
+## Hardhat Network Config
+
+If you need to add Base Sepolia to `hardhat.config.ts`:
+
+```typescript
+networks: {
+  baseSepolia: {
+    url: "https://sepolia.base.org",
+    accounts: [process.env.DEPLOYER_PRIVATE_KEY!],
+    chainId: 84532,
+  },
+}
+```
+
+## Run Tests Before Deploying
+
+Always verify locally first:
+
+```bash
+npx hardhat test
+```
+
+All 226 tests should pass before deploying to a live network.

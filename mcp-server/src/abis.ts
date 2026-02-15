@@ -87,6 +87,65 @@ export const ORACLE_REGISTRY_ABI = [
   "event MinStakeUpdated(uint256 oldMinStake, uint256 newMinStake)",
 ];
 
+export const ORACLE_ROUTER_ABI = [
+  // Validator registration
+  "function registerValidator(bytes32[] categories, string endpoint) payable",
+  "function deactivateValidator()",
+  "function addCategory(bytes32 category)",
+  "function removeCategory(bytes32 category)",
+
+  // Verification job flow
+  "function requestVerification(address pactContract, uint256 pactId, bytes32 category, bytes32 specHash, address paymentToken) payable returns (uint256)",
+  "function claimJob(uint256 jobId)",
+  "function submitValidation(uint256 jobId, uint8 score, bytes32 proof)",
+  "function expireJob(uint256 jobId)",
+  "function cancelJob(uint256 jobId)",
+
+  // Earnings
+  "function claimEarnings(address token)",
+  "function claimProtocolRevenue(address token)",
+
+  // Slashing
+  "function slashValidator(address validator, uint256 amount, string reason)",
+
+  // Admin
+  "function setRouterFeeBps(uint256 feeBps)",
+  "function setDefaultJobTimeout(uint256 timeout)",
+  "function setMinValidatorStake(uint256 minStake)",
+  "function setPactWhitelistEnabled(bool enabled)",
+  "function setAllowedPactContract(address pactContract, bool allowed)",
+
+  // View functions
+  "function getJob(uint256 jobId) view returns (uint256 pactId, address pactContract, bytes32 category, bytes32 specHash, address assignedValidator, uint256 fee, uint256 requestedAt, uint256 deadline, uint8 status, uint8 score, bytes32 proof, address paymentToken)",
+  "function getValidatorInfo(address validator) view returns (bool isActive, uint256 stake, uint256 completedJobs, uint256 failedJobs, uint256 totalEarned, string endpoint)",
+  "function getValidatorCategories(address validator) view returns (bytes32[])",
+  "function getValidatorsForCategory(bytes32 category) view returns (address[], uint256[], uint256[], uint256[])",
+  "function getBestValidator(bytes32 category) view returns (address)",
+  "function getCategoryValidatorCount(bytes32 category) view returns (uint256)",
+  "function getValidatorCount() view returns (uint256)",
+  "function pendingEarnings(address validator, address token) view returns (uint256)",
+  "function protocolRevenue(address token) view returns (uint256)",
+  "function pactToJobId(address pactContract, uint256 pactId) view returns (uint256)",
+  "function pactHasJob(address pactContract, uint256 pactId) view returns (bool)",
+  "function nextJobId() view returns (uint256)",
+  "function minValidatorStake() view returns (uint256)",
+  "function routerFeeBps() view returns (uint256)",
+  "function defaultJobTimeout() view returns (uint256)",
+
+  // Events
+  "event ValidatorRegistered(address indexed validator, uint256 stake, string endpoint)",
+  "event ValidatorDeactivated(address indexed validator)",
+  "event ValidatorCategoryAdded(address indexed validator, bytes32 indexed category)",
+  "event ValidatorCategoryRemoved(address indexed validator, bytes32 indexed category)",
+  "event ValidatorSlashed(address indexed validator, uint256 amount, string reason)",
+  "event JobRequested(uint256 indexed jobId, uint256 indexed pactId, address pactContract, bytes32 category, address requester, uint256 fee)",
+  "event JobAssigned(uint256 indexed jobId, address indexed validator)",
+  "event JobCompleted(uint256 indexed jobId, address indexed validator, uint8 score)",
+  "event JobExpired(uint256 indexed jobId, address indexed validator)",
+  "event EarningsClaimed(address indexed validator, address indexed token, uint256 amount)",
+  "event ProtocolRevenueClaimed(address indexed token, uint256 amount)",
+];
+
 export const AGENT_POLICY_MODULE_ABI = [
   "function grantSession(address sessionKey, uint256 maxPerTx, uint256 maxDaily, uint256 maxWeekly, uint256 humanApprovalAbove, address[] allowedContracts, bytes4[] allowedFunctions, address[] allowedTokens, uint256 expiresAt)",
   "function revokeSession(address sessionKey)",
