@@ -1,11 +1,15 @@
 {
   "$schema": "https://mintlify.com/docs.json",
-  "theme": "mint",
+  "theme": "venus",
   "name": "Agent Pact",
+  "favicon": "/favicon.svg",
   "colors": {
     "primary": "#16A34A"
   },
-  "navigation": {
-    "pages": ["introduction"]
-  }
+  "navigation": [
+    {
+      "group": "Getting Started",
+      "pages": ["introduction"]
+    }
+  ]
 }
