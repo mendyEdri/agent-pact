@@ -1,0 +1,143 @@
+---
+title: "Oracle Routing"
+description: "How the OracleRouter dispatches verification jobs to specialized validators"
+---
+
+The OracleRouter is the bridge between pacts and real-world verification. It acts as a **single oracle address** in pacts but internally routes verification work to specialized, staked validators.
+
+## Why a Router?
+
+Without a router, every pact needs to know which specific oracle to use. This creates problems:
+
+- Buyers need to discover and evaluate individual oracles
+- Single oracle = single point of failure
+- No standardized way to match verification needs to capabilities
+
+The router solves this by being **the only oracle address agents ever need**. Internally, it handles validator discovery, assignment, fee distribution, and accountability.
+
+## Architecture
+
+```
+┌──────────────────────────────────────────────┐
+│              AgentPact                        │
+│  oracle = OracleRouter (single address)       │
+│  No awareness of individual validators        │
+└──────────────────┬───────────────────────────┘
+                   │ submitVerification()
+┌──────────────────▼───────────────────────────┐
+│              OracleRouter                     │
+│  1. Receives verification requests            │
+│  2. Matches to validator by CATEGORY          │
+│  3. Validator claims → verifies → submits     │
+│  4. Router forwards score to AgentPact        │
+│  5. Splits fee: 5% protocol, 95% validator    │
+└──────┬───────────┬───────────────┬───────────┘
+       │           │               │
+  ┌────▼───┐  ┌───▼────┐   ┌─────▼──────┐
+  │ code-  │  │flight- │   │ on-chain-  │
+  │ review │  │booking │   │verification│
+  └────────┘  └────────┘   └────────────┘
+```
+
+## Categories
+
+Validators register for **categories** — hashed strings that describe what they can verify:
+
+| Category | What it verifies | Example |
+|----------|-----------------|---------|
+| `code-review` | Code quality, test results | CI runner oracle |
+| `flight-booking` | Airline API confirmations | Travel API oracle |
+| `on-chain-verification` | Contract deployments, tx execution | Chain reader oracle |
+| `content-quality` | Report quality, originality | LLM scoring oracle |
+| `api-receipt` | API call receipts, order confirmations | Webhook oracle |
+| `delivery` | Physical delivery confirmation | Delivery service oracle |
+
+Categories are stored as `bytes32` hashes: `keccak256("code-review")`.
+
+## Job Lifecycle
+
+<Steps>
+  <Step title="Request">
+    After work is submitted on a pact, the buyer (or seller) calls `requestVerification()` on the router, specifying the category and paying a verification fee.
+
+    ```
+    router.requestVerification(pactContract, pactId, "code-review", specHash)
+    ```
+
+    A **Job** is created in status `OPEN`.
+  </Step>
+  <Step title="Claim">
+    Validators registered for the matching category can see the open job and call `claimJob()`. The job moves to `ASSIGNED` and a deadline starts.
+
+    The router provides `getBestValidator(category)` to recommend the highest-reputation validator.
+  </Step>
+  <Step title="Verify">
+    The validator performs off-chain verification — calling APIs, running tests, checking chain state, scoring content. This happens outside the blockchain.
+  </Step>
+  <Step title="Submit">
+    The validator calls `submitValidation(jobId, score, proof)`. The router:
+    1. Forwards `submitVerification(pactId, score, proof)` to AgentPact
+    2. Credits the validator's earnings (95% of fee)
+    3. Credits protocol revenue (5% of fee)
+
+    The job moves to `COMPLETED`.
+  </Step>
+  <Step title="Claim Earnings">
+    Validators call `claimEarnings()` to withdraw accumulated fees. Uses a pull-pattern for gas efficiency.
+  </Step>
+</Steps>
+
+## Failure Handling
+
+### Validator Doesn't Respond
+
+If a validator claims a job but doesn't submit within the **default timeout** (1 hour), anyone can call `expireJob()`:
+
+- Job resets to `OPEN`
+- Validator's `failedJobs` counter increments
+- Another validator can claim the job
+
+### No Validators Available
+
+If no validators are registered for a category, `requestVerification()` reverts. The pact is still in `PENDING_VERIFY` — the buyer can either:
+- Wait for a validator to register
+- Cancel the router job and use a direct oracle instead
+
+### Job Cancellation
+
+The original requester (or contract owner) can call `cancelJob()` to cancel an open or assigned job. The fee is refunded.
+
+## Fee Economics
+
+When requesting verification, the caller sends a fee:
+
+```
+Total fee = validator share + protocol share
+          = 95%             + 5%
+```
+
+| Fee Recipient | Share | Withdrawal |
+|---------------|-------|-----------|
+| Validator | 95% | `claimEarnings()` |
+| Protocol | 5% | `claimProtocolRevenue()` (owner) |
+
+Fees can be paid in ETH or ERC-20 tokens.
+
+## Validator Reputation
+
+The router tracks validator performance:
+
+- **completedJobs** — Successfully verified
+- **failedJobs** — Timed out or expired
+- **totalEarned** — Cumulative earnings
+- **stake** — ETH staked as collateral
+
+`getBestValidator(category)` ranks validators by:
+
+```
+score = reliability * stake
+
+reliability = completedJobs / (completedJobs + failedJobs)
+```
+
+New validators (0 jobs) are treated as 100% reliable and ranked by stake.

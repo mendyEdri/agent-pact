@@ -1,0 +1,212 @@
+---
+title: "Build a Validator"
+description: "How to build an oracle validator service that earns fees by verifying agent work"
+---
+
+Validators are the backbone of the oracle routing system. They perform off-chain verification and get paid for it. This guide covers how to build one.
+
+## What a Validator Does
+
+1. **Registers** on-chain with categories and stake
+2. **Monitors** for open verification jobs matching its categories
+3. **Claims** jobs it can verify
+4. **Performs** off-chain verification (API calls, test runs, chain reads, etc.)
+5. **Submits** a score and proof on-chain
+6. **Earns** 95% of the verification fee
+
+## Architecture
+
+```
+┌──────────────────────────────────────┐
+│         Validator Service            │
+│                                      │
+│  1. Listen for JobRequested events   │
+│  2. Filter by my categories          │
+│  3. Claim matching jobs              │
+│  4. Run verification logic           │
+│  5. Submit score + proof             │
+└──────────┬───────────────────────────┘
+           │
+    ┌──────▼──────┐
+    │ OracleRouter │
+    │  (on-chain)  │
+    └─────────────┘
+```
+
+## Step 1: Register as Validator
+
+Use the MCP tool or call the contract directly:
+
+```
+Agent: "Register as a validator for code-review and api-receipt.
+        Stake: 1 ETH.
+        Endpoint: https://my-validator.example.com/webhook"
+```
+
+Or programmatically:
+
+```typescript
+const categories = [
+  ethers.keccak256(ethers.toUtf8Bytes("code-review")),
+  ethers.keccak256(ethers.toUtf8Bytes("api-receipt")),
+];
+
+await router.registerValidator(categories, "https://my-validator.example.com/webhook", {
+  value: ethers.parseEther("1.0"),
+});
+```
+
+## Step 2: Monitor for Jobs
+
+Listen for `JobRequested` events filtered by your categories:
+
+```typescript
+const router = new ethers.Contract(ROUTER_ADDRESS, ORACLE_ROUTER_ABI, provider);
+
+// Listen for new jobs
+router.on("JobRequested", async (jobId, pactId, pactContract, category, requester, fee) => {
+  // Check if this matches our categories
+  const myCategories = await router.getValidatorCategories(myAddress);
+  if (!myCategories.includes(category)) return;
+
+  console.log(`New job #${jobId} in my category. Fee: ${ethers.formatEther(fee)} ETH`);
+
+  // Claim the job
+  const tx = await router.claimJob(jobId);
+  await tx.wait();
+  console.log(`Claimed job #${jobId}`);
+
+  // Run verification
+  await verifyJob(jobId, pactId, pactContract, category);
+});
+```
+
+## Step 3: Verification Logic
+
+This is where the actual work happens. The logic depends on the category.
+
+### Code Review Validator
+
+```typescript
+async function verifyCodeReview(pactId: number, specHash: string): Promise<{score: number, proof: string}> {
+  // 1. Get the pact spec (off-chain — specHash points to IPFS, GitHub, etc.)
+  const spec = await fetchSpec(specHash);
+
+  // 2. Clone the repo
+  const { stdout } = await exec(`git clone ${spec.repoUrl} /tmp/verify-${pactId}`);
+
+  // 3. Run tests
+  const testResult = await exec(`cd /tmp/verify-${pactId} && npm test`);
+  const testsPassing = parseTestOutput(testResult.stdout);
+
+  // 4. Check coverage
+  const coverage = await exec(`cd /tmp/verify-${pactId} && npm run coverage`);
+  const coveragePercent = parseCoverage(coverage.stdout);
+
+  // 5. Score
+  let score = 0;
+  if (testsPassing.passed === testsPassing.total) score += 60;
+  if (coveragePercent >= 80) score += 25;
+  if (testsPassing.total >= spec.minTests) score += 15;
+
+  // 6. Proof = hash of test output
+  const proof = ethers.keccak256(ethers.toUtf8Bytes(JSON.stringify({
+    tests: testsPassing,
+    coverage: coveragePercent,
+    timestamp: Date.now(),
+  })));
+
+  return { score, proof };
+}
+```
+
+### API Receipt Validator
+
+```typescript
+async function verifyApiReceipt(pactId: number, specHash: string): Promise<{score: number, proof: string}> {
+  const spec = await fetchSpec(specHash);
+
+  // Check the API for the claimed action
+  const response = await fetch(spec.verificationEndpoint, {
+    method: "POST",
+    body: JSON.stringify({ orderId: spec.orderId }),
+  });
+
+  const data = await response.json();
+
+  let score = 0;
+  if (data.status === "confirmed") score += 70;
+  if (data.amount === spec.expectedAmount) score += 15;
+  if (data.recipient === spec.expectedRecipient) score += 15;
+
+  const proof = ethers.keccak256(ethers.toUtf8Bytes(JSON.stringify(data)));
+  return { score, proof };
+}
+```
+
+### On-Chain Validator
+
+```typescript
+async function verifyOnChain(pactId: number, specHash: string): Promise<{score: number, proof: string}> {
+  const spec = await fetchSpec(specHash);
+
+  // Verify contract deployment
+  const code = await provider.getCode(spec.contractAddress);
+  const isDeployed = code !== "0x";
+
+  // Verify bytecode matches
+  const expectedHash = ethers.keccak256(spec.expectedBytecode);
+  const actualHash = ethers.keccak256(code);
+  const bytecodeMatches = expectedHash === actualHash;
+
+  let score = 0;
+  if (isDeployed) score += 50;
+  if (bytecodeMatches) score += 50;
+
+  const proof = actualHash;
+  return { score, proof };
+}
+```
+
+## Step 4: Submit Result
+
+```typescript
+async function verifyJob(jobId: number, pactId: number, pactContract: string, category: string) {
+  try {
+    // Run category-specific verification
+    const { score, proof } = await runVerification(category, pactId);
+
+    // Submit to router
+    const tx = await router.submitValidation(jobId, score, proof);
+    await tx.wait();
+
+    console.log(`Job #${jobId} verified. Score: ${score}/100`);
+  } catch (error) {
+    console.error(`Failed to verify job #${jobId}:`, error);
+    // Don't submit — let the job expire rather than submit a bad score
+  }
+}
+```
+
+## Step 5: Claim Earnings
+
+Periodically withdraw accumulated earnings:
+
+```typescript
+const earnings = await router.pendingEarnings(myAddress, ethers.ZeroAddress);
+if (earnings > 0) {
+  await router.claimEarnings(ethers.ZeroAddress);
+  console.log(`Claimed ${ethers.formatEther(earnings)} ETH`);
+}
+```
+
+## Best Practices
+
+<Warning>
+**Never submit a score you can't justify.** If your proof doesn't match your score, you risk being challenged and slashed.
+</Warning>
+
+- **Fail gracefully**: If verification logic errors out, let the job expire rather than submitting 0. A failed job hurts your reputation less than a slashing.
+- **Be deterministic**: Other validators or challengers should be able to reproduce your result from the proof.
+- **Keep logs**: Store raw verification data off-chain. You may need it to defend against challenges.
+- **Set realistic categories**: Only register for categories you can actually verify. Claiming jobs you can't complete hurts your reputation.

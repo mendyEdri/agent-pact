@@ -1,0 +1,139 @@
+---
+title: "AgentPolicyModule"
+description: "Safe module for agent spending limits, session keys, and shared budgets"
+---
+
+The AgentPolicyModule is a Safe module that enforces spending guardrails on agent wallets. It provides session keys with configurable limits, contract allowlists, and shared budgets for multi-agent wallets.
+
+## Session Keys
+
+Session keys are limited-permission keys granted to agents. Each key has its own spending limits and restrictions.
+
+### grantSession
+
+Grant a session key to an agent (owner only).
+
+```solidity
+function grantSession(
+    address sessionKey,
+    uint256 maxPerTx,          // Max wei per single transaction
+    uint256 maxDaily,          // Max wei per 24 hours
+    uint256 maxWeekly,         // Max wei per 7 days
+    uint256 humanApprovalAbove,// Transactions above this require human sign-off
+    address[] allowedContracts,// Only these contracts can be called
+    bytes4[] allowedFunctions, // Only these function selectors allowed
+    address[] allowedTokens,   // Only these ERC-20 tokens allowed
+    uint256 expiresAt          // Unix timestamp when key expires
+) external
+```
+
+### revokeSession
+
+Immediately deactivate a session key (owner only).
+
+```solidity
+function revokeSession(address sessionKey) external
+```
+
+## Transaction Execution
+
+### executeTransaction
+
+Execute a transaction through the Safe using a session key.
+
+```solidity
+function executeTransaction(
+    address to,
+    uint256 value,
+    bytes data
+) external returns (bool)
+```
+
+The module validates against all policy checks before executing:
+
+1. Session key is active and not expired
+2. Target contract is in allowlist
+3. Function selector is in allowlist
+4. Value is within per-tx limit
+5. Daily spending limit not exceeded
+6. Weekly spending limit not exceeded
+7. Shared budget not exceeded (if enabled)
+
+### validateTransaction
+
+Check if a transaction would pass policy checks without executing.
+
+```solidity
+function validateTransaction(
+    address sessionKey,
+    address to,
+    uint256 value,
+    bytes data
+) external returns (bool)
+```
+
+## Shared Budgets
+
+When multiple agents share a Safe wallet, the shared budget prevents them from collectively overspending.
+
+### setSharedBudget
+
+Set wallet-wide daily and weekly limits (owner only).
+
+```solidity
+function setSharedBudget(uint256 maxDaily, uint256 maxWeekly) external
+```
+
+### disableSharedBudget
+
+Remove shared budget limits (owner only).
+
+```solidity
+function disableSharedBudget() external
+```
+
+## Budget Reservations
+
+Agents can **reserve** budget before committing to a pact. This prevents double-booking when multiple agents are evaluating pacts simultaneously.
+
+### reserveBudget
+
+Reserve an amount from the shared budget.
+
+```solidity
+function reserveBudget(uint256 amount) external returns (uint256 reservationId)
+```
+
+### releaseBudget
+
+Release a reservation (e.g., after a pact is cancelled).
+
+```solidity
+function releaseBudget(uint256 reservationId) external
+```
+
+## View Functions
+
+| Function | Returns |
+|----------|---------|
+| `getSession(sessionKey)` | Full policy configuration |
+| `getSpending(sessionKey)` | Current daily/weekly spending |
+| `isSessionActive(sessionKey)` | Whether key is active |
+| `getSharedBudget()` | Shared budget config and current usage |
+| `getAvailableBudget()` | Remaining available budget |
+| `getReservation(id)` | Reservation details |
+| `getSessionReservations(sessionKey)` | All reservations for a key |
+
+## Events
+
+| Event | When |
+|-------|------|
+| `SessionGranted` | New session key created |
+| `SessionRevoked` | Session key deactivated |
+| `TransactionValidated` | Transaction passed policy checks |
+| `TransactionRejected` | Transaction blocked by policy |
+| `TransactionExecuted` | Transaction sent through Safe |
+| `SpendingLimitHit` | Agent hit a spending cap |
+| `SharedBudgetSet` | Shared budget configured |
+| `BudgetReserved` | Budget reserved by agent |
+| `BudgetReleased` | Reservation released |
