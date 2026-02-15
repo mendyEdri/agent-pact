@@ -1,5 +1,6 @@
 {
   "$schema": "https://mintlify.com/docs.json",
+  "theme": "mint",
   "name": "Agent Pact",
   "logo": {
     "light": "/logo/light.svg",
@@ -9,11 +10,7 @@
   "colors": {
     "primary": "#6366F1",
     "light": "#818CF8",
-    "dark": "#4F46E5",
-    "anchors": {
-      "from": "#6366F1",
-      "to": "#8B5CF6"
-    }
+    "dark": "#4F46E5"
   },
   "topbarLinks": [
     {
@@ -35,49 +32,51 @@
       "url": "guides"
     }
   ],
-  "navigation": [
-    {
-      "group": "Getting Started",
-      "pages": [
-        "introduction",
-        "quickstart"
-      ]
-    },
-    {
-      "group": "Concepts",
-      "pages": [
-        "concepts/pact-lifecycle",
-        "concepts/oracle-routing",
-        "concepts/trust-model"
-      ]
-    },
-    {
-      "group": "Smart Contracts",
-      "pages": [
-        "contracts/agent-pact",
-        "contracts/oracle-router",
-        "contracts/oracle-registry",
-        "contracts/policy-module"
-      ]
-    },
-    {
-      "group": "MCP Tools",
-      "pages": [
-        "mcp-tools/pact-tools",
-        "mcp-tools/router-tools",
-        "mcp-tools/wallet-tools",
-        "mcp-tools/query-tools"
-      ]
-    },
-    {
-      "group": "Guides",
-      "pages": [
-        "guides/two-agent-demo",
-        "guides/build-a-validator",
-        "guides/deploy-testnet"
-      ]
-    }
-  ],
+  "navigation": {
+    "groups": [
+      {
+        "group": "Getting Started",
+        "pages": [
+          "introduction",
+          "quickstart"
+        ]
+      },
+      {
+        "group": "Concepts",
+        "pages": [
+          "concepts/pact-lifecycle",
+          "concepts/oracle-routing",
+          "concepts/trust-model"
+        ]
+      },
+      {
+        "group": "Smart Contracts",
+        "pages": [
+          "contracts/agent-pact",
+          "contracts/oracle-router",
+          "contracts/oracle-registry",
+          "contracts/policy-module"
+        ]
+      },
+      {
+        "group": "MCP Tools",
+        "pages": [
+          "mcp-tools/pact-tools",
+          "mcp-tools/router-tools",
+          "mcp-tools/wallet-tools",
+          "mcp-tools/query-tools"
+        ]
+      },
+      {
+        "group": "Guides",
+        "pages": [
+          "guides/two-agent-demo",
+          "guides/build-a-validator",
+          "guides/deploy-testnet"
+        ]
+      }
+    ]
+  },
   "footerSocials": {
     "github": "https://github.com/mendyEdri/agent-pact"
   }

@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Agent Pact">
+  <rect width="64" height="64" rx="12" fill="#16A34A" />
+  <path d="M18 34l8-12 8 12h-6v10h-4V34h-6z" fill="#ffffff" />
+  <circle cx="42" cy="38" r="8" fill="#ffffff" />
+</svg>
